@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+data/*.db
+data/*.npz
+data/*.json
+data/*.csv
+!data/.gitkeep
+.env
+*.egg-info/
+dist/
+build/
