@@ -1,11 +1,13 @@
 """
 ProductMatchPro - SQLite Product Database
 Stores structured product records, model code patterns, confirmed equivalents, and feedback.
+Thread-safety: All write operations are serialised through a threading.Lock.
 """
 
 import sqlite3
 import json
 import uuid
+import threading
 from pathlib import Path
 from typing import Optional
 from fuzzywuzzy import fuzz, process
@@ -23,6 +25,7 @@ class ProductDB:
 
     def __init__(self, db_path: str = str(DB_PATH)):
         self.db_path = db_path
+        self._lock = threading.Lock()
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
@@ -125,49 +128,50 @@ class ProductDB:
     def insert_product(self, product: HydraulicProduct) -> str:
         if not product.id:
             product.id = str(uuid.uuid4())
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT OR REPLACE INTO products (
-                id, company, model_code, product_name, category, subcategory,
-                max_pressure_bar, max_flow_lpm, valve_size, spool_type,
-                num_positions, num_ports, actuator_type, coil_voltage,
-                coil_type, coil_connector, port_size, port_type,
-                mounting, mounting_pattern, body_material, seal_material,
-                operating_temp_min_c, operating_temp_max_c, fluid_type,
-                viscosity_range_cst, weight_kg, displacement_cc,
-                speed_rpm_max, bore_diameter_mm, rod_diameter_mm, stroke_mm,
-                description, source_document, raw_text, model_code_decoded
-            ) VALUES (
-                ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?, ?,
-                ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?, ?, ?
-            )
-        """, (
-            product.id, product.company, product.model_code,
-            product.product_name, product.category, product.subcategory,
-            product.max_pressure_bar, product.max_flow_lpm,
-            product.valve_size, product.spool_type,
-            product.num_positions, product.num_ports,
-            product.actuator_type, product.coil_voltage,
-            product.coil_type, product.coil_connector,
-            product.port_size, product.port_type,
-            product.mounting, product.mounting_pattern,
-            product.body_material, product.seal_material,
-            product.operating_temp_min_c, product.operating_temp_max_c,
-            product.fluid_type, product.viscosity_range_cst,
-            product.weight_kg, product.displacement_cc,
-            product.speed_rpm_max, product.bore_diameter_mm,
-            product.rod_diameter_mm, product.stroke_mm,
-            product.description, product.source_document, product.raw_text,
-            json.dumps(product.model_code_decoded) if product.model_code_decoded else None,
-        ))
-        self.conn.commit()
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO products (
+                    id, company, model_code, product_name, category, subcategory,
+                    max_pressure_bar, max_flow_lpm, valve_size, spool_type,
+                    num_positions, num_ports, actuator_type, coil_voltage,
+                    coil_type, coil_connector, port_size, port_type,
+                    mounting, mounting_pattern, body_material, seal_material,
+                    operating_temp_min_c, operating_temp_max_c, fluid_type,
+                    viscosity_range_cst, weight_kg, displacement_cc,
+                    speed_rpm_max, bore_diameter_mm, rod_diameter_mm, stroke_mm,
+                    description, source_document, raw_text, model_code_decoded
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?
+                )
+            """, (
+                product.id, product.company, product.model_code,
+                product.product_name, product.category, product.subcategory,
+                product.max_pressure_bar, product.max_flow_lpm,
+                product.valve_size, product.spool_type,
+                product.num_positions, product.num_ports,
+                product.actuator_type, product.coil_voltage,
+                product.coil_type, product.coil_connector,
+                product.port_size, product.port_type,
+                product.mounting, product.mounting_pattern,
+                product.body_material, product.seal_material,
+                product.operating_temp_min_c, product.operating_temp_max_c,
+                product.fluid_type, product.viscosity_range_cst,
+                product.weight_kg, product.displacement_cc,
+                product.speed_rpm_max, product.bore_diameter_mm,
+                product.rod_diameter_mm, product.stroke_mm,
+                product.description, product.source_document, product.raw_text,
+                json.dumps(product.model_code_decoded) if product.model_code_decoded else None,
+            ))
+            self.conn.commit()
         return product.id
 
     def get_product(self, product_id: str) -> Optional[HydraulicProduct]:
@@ -179,9 +183,10 @@ class ProductDB:
         return None
 
     def delete_product(self, product_id: str):
-        cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM products WHERE id = ?", (product_id,))
-        self.conn.commit()
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute("DELETE FROM products WHERE id = ?", (product_id,))
+            self.conn.commit()
 
     def get_all_products(self, company: Optional[str] = None) -> list[HydraulicProduct]:
         cursor = self.conn.cursor()
@@ -340,19 +345,20 @@ class ProductDB:
         return decoded
 
     def insert_model_code_pattern(self, pattern: ModelCodePattern):
-        cursor = self.conn.cursor()
-        pattern_id = str(uuid.uuid4())
-        cursor.execute("""
-            INSERT OR REPLACE INTO model_code_patterns
-            (id, company, series, segment_position, segment_name,
-             code_value, decoded_value, maps_to_field)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            pattern_id, pattern.company, pattern.series,
-            pattern.segment_position, pattern.segment_name,
-            pattern.code_value, pattern.decoded_value, pattern.maps_to_field,
-        ))
-        self.conn.commit()
+        with self._lock:
+            cursor = self.conn.cursor()
+            pattern_id = str(uuid.uuid4())
+            cursor.execute("""
+                INSERT OR REPLACE INTO model_code_patterns
+                (id, company, series, segment_position, segment_name,
+                 code_value, decoded_value, maps_to_field)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                pattern_id, pattern.company, pattern.series,
+                pattern.segment_position, pattern.segment_name,
+                pattern.code_value, pattern.decoded_value, pattern.maps_to_field,
+            ))
+            self.conn.commit()
 
     # ── Confirmed Equivalents ─────────────────────────────────────────
 
@@ -387,17 +393,18 @@ class ProductDB:
         confidence_override: float = 0.95,
         notes: str = "",
     ):
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT OR REPLACE INTO confirmed_equivalents
-            (id, competitor_model_code, competitor_company,
-             my_company_model_code, confirmed_by, confidence_override, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            str(uuid.uuid4()), competitor_code, competitor_company,
-            my_company_code, confirmed_by, confidence_override, notes,
-        ))
-        self.conn.commit()
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO confirmed_equivalents
+                (id, competitor_model_code, competitor_company,
+                 my_company_model_code, confirmed_by, confidence_override, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                str(uuid.uuid4()), competitor_code, competitor_company,
+                my_company_code, confirmed_by, confidence_override, notes,
+            ))
+            self.conn.commit()
 
     # ── Feedback ──────────────────────────────────────────────────────
 
@@ -409,17 +416,18 @@ class ProductDB:
         confidence: float,
         thumbs_up: bool,
     ):
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT INTO feedback
-            (id, query, competitor_model_code, my_company_model_code,
-             confidence_score, thumbs_up)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            str(uuid.uuid4()), query, competitor_code,
-            my_company_code, confidence, thumbs_up,
-        ))
-        self.conn.commit()
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                INSERT INTO feedback
+                (id, query, competitor_model_code, my_company_model_code,
+                 confidence_score, thumbs_up)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                str(uuid.uuid4()), query, competitor_code,
+                my_company_code, confidence, thumbs_up,
+            ))
+            self.conn.commit()
 
     def get_feedback(self, limit: int = 100) -> list[dict]:
         cursor = self.conn.cursor()
@@ -441,12 +449,13 @@ class ProductDB:
         return row["canonical"] if row else term
 
     def insert_synonym(self, term: str, canonical: str):
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "INSERT OR REPLACE INTO synonyms (id, term, canonical) VALUES (?, ?, ?)",
-            (str(uuid.uuid4()), term, canonical),
-        )
-        self.conn.commit()
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO synonyms (id, term, canonical) VALUES (?, ?, ?)",
+                (str(uuid.uuid4()), term, canonical),
+            )
+            self.conn.commit()
 
     # ── Spec Comparison ───────────────────────────────────────────────
 

@@ -5,9 +5,9 @@ Prompts for LangGraph agent nodes.
 
 QUERY_PARSER_PROMPT = """You are an expert at understanding hydraulic product queries from distributors.
 
-A distributor is searching for a {my_company} equivalent to a competitor's hydraulic product.
+A distributor is searching for a Danfoss equivalent to a competitor's hydraulic product.
 They may provide:
-- A full or partial competitor model code (e.g. "DG4V-3-2A-M-U-H7-60" or just "DG4V-3")
+- A full or partial competitor model code (e.g. "4WE6D6X/EG24N9K4" or just "4WE6")
 - A competitor brand name + partial code (e.g. "Parker D1VW")
 - A natural language description (e.g. "solenoid valve 24V CETOP 5 315 bar")
 - A follow-up question about a previous result
@@ -22,7 +22,7 @@ Analyze the user's query and extract:
 
 Return as JSON."""
 
-COMPARISON_NARRATIVE_PROMPT = """You are a hydraulic product expert helping a distributor understand how a {my_company} product compares to a competitor's product.
+COMPARISON_NARRATIVE_PROMPT = """You are a hydraulic product expert helping a distributor understand how a Danfoss product compares to a competitor's product.
 
 Given the comparison data below, write a clear, concise explanation that a distributor can use to make a purchasing decision. Focus on:
 1. Whether this is a direct drop-in replacement
@@ -33,7 +33,7 @@ Given the comparison data below, write a clear, concise explanation that a distr
 Keep it professional and factual. Do not make up specifications - only reference data provided.
 
 Competitor Product: {competitor_code} ({competitor_company})
-{my_company} Equivalent: {my_company_code}
+Danfoss Equivalent: {my_company_code}
 Confidence Score: {confidence}
 
 Specification Comparison:
@@ -48,7 +48,7 @@ This means we cannot confidently recommend a drop-in replacement. The closest op
 
 {partial_matches}
 
-Contact your {my_company} sales representative:
+Contact your Danfoss sales representative:
 {contact_info}"""
 
 CLARIFICATION_PROMPT = """I found multiple products matching "{query}". Could you please clarify which one you're looking for?
@@ -62,7 +62,7 @@ NO_MATCH_PROMPT = """I couldn't find "{query}" in our database of competitor pro
 This could mean:
 - The model code might be misspelt - please check and try again
 - This product hasn't been added to our database yet
-- Try entering just the series code (e.g. "DG4V" instead of the full code)
+- Try entering just the series code (e.g. "4WE6" instead of the full code)
 
 If you'd like help finding the right product, please contact your local sales representative:
 {contact_info}"""

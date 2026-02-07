@@ -12,7 +12,11 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from dotenv import load_dotenv
 import json
+import re
+import logging
 import uuid
+
+logger = logging.getLogger(__name__)
 
 from models import HydraulicProduct, MatchResult, CONFIDENCE_THRESHOLD
 from storage.product_db import ProductDB
@@ -29,8 +33,8 @@ from prompts import (
 load_dotenv(override=True)
 
 # Configurable
-MY_COMPANY_NAME = "my_company"
-SALES_CONTACT = "sales@my_company.com | +44 (0)XXX XXX XXXX"
+MY_COMPANY_NAME = "Danfoss"
+SALES_CONTACT = "sales@danfoss.com | +44 (0)XXX XXX XXXX"
 
 
 class MatchState(TypedDict):
@@ -90,7 +94,8 @@ class MatchGraph:
     # ── Graph Nodes ───────────────────────────────────────────────────
 
     def parse_query(self, state: MatchState) -> dict:
-        """Parse the user's query to extract model code, competitor, and intent."""
+        """Parse the user's query to extract model code, competitor, and intent.
+        Falls back to regex extraction if the LLM call fails (e.g. API down)."""
         messages = state["messages"]
         user_message = ""
         for msg in reversed(messages):
@@ -98,26 +103,71 @@ class MatchGraph:
                 user_message = msg.content if isinstance(msg, HumanMessage) else msg.get("content", "")
                 break
 
-        response = self.llm.invoke([
-            SystemMessage(content=QUERY_PARSER_PROMPT),
-            HumanMessage(content=f"User query: {user_message}"),
-        ])
+        # Truncate extremely long input to prevent API cost abuse
+        user_message_trimmed = user_message[:500]
 
         try:
+            response = self.llm.invoke([
+                SystemMessage(content=QUERY_PARSER_PROMPT),
+                HumanMessage(content=f"User query: {user_message_trimmed}"),
+            ])
             parsed = json.loads(response.content)
         except json.JSONDecodeError:
-            parsed = {
-                "model_code": user_message.strip(),
-                "competitor_name": None,
-                "category": None,
-                "specs": {},
-                "is_followup": False,
-                "intent": "lookup",
-            }
+            parsed = self._regex_parse_fallback(user_message_trimmed)
+        except Exception as e:
+            logger.warning(f"LLM parse_query failed, using regex fallback: {e}")
+            parsed = self._regex_parse_fallback(user_message_trimmed)
 
         return {
             "query": user_message,
             "parsed_query": parsed,
+        }
+
+    @staticmethod
+    def _regex_parse_fallback(user_message: str) -> dict:
+        """Extract model code and competitor from user message using regex.
+        Used when the LLM is unavailable."""
+        text = user_message.strip()
+
+        # Known competitor names to detect
+        known_brands = [
+            "bosch rexroth", "rexroth", "parker", "atos",
+            "moog", "hydac", "bucher", "casappa", "denison",
+        ]
+        competitor_name = None
+        for brand in known_brands:
+            if brand in text.lower():
+                competitor_name = brand.title()
+                break
+
+        # Extract category hints
+        category_hints = {
+            "directional": "directional_valves",
+            "pressure": "pressure_valves",
+            "flow": "flow_valves",
+            "pump": "pumps",
+            "motor": "motors",
+            "cylinder": "cylinders",
+            "filter": "filters",
+            "accumulator": "accumulators",
+        }
+        category = None
+        for hint, cat in category_hints.items():
+            if hint in text.lower():
+                category = cat
+                break
+
+        # Try to extract a model code (alphanumeric with dashes/slashes)
+        model_match = re.search(r'[A-Z0-9][A-Z0-9\-/\.]{3,}[A-Z0-9]', text, re.IGNORECASE)
+        model_code = model_match.group(0) if model_match else text.split()[0] if text else ""
+
+        return {
+            "model_code": model_code,
+            "competitor_name": competitor_name,
+            "category": category,
+            "specs": {},
+            "is_followup": False,
+            "intent": "lookup",
         }
 
     def lookup_competitor(self, state: MatchState) -> dict:

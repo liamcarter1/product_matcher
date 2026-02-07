@@ -1,10 +1,12 @@
 """
 ProductMatchPro - Distributor App
-Clean chat interface for distributors to find {my_company} equivalents for competitor products.
+Clean chat interface for distributors to find Danfoss equivalents for competitor products.
 
 Run: python distributor_app.py
 """
 
+import os
+import logging
 import gradio as gr
 import uuid
 from dotenv import load_dotenv
@@ -16,6 +18,8 @@ from tools.lookup_tools import LookupTools
 
 load_dotenv(override=True)
 
+logger = logging.getLogger(__name__)
+
 # ── Initialise ────────────────────────────────────────────────────────
 
 db = ProductDB()
@@ -26,13 +30,15 @@ lookup = LookupTools(db, vs)
 
 # ── Chat Handler ──────────────────────────────────────────────────────
 
+MAX_MESSAGE_LEN = 500  # Limit input length to prevent abuse
+
 def chat(message: str, history: list, thread_id: str, category: str, competitor: str):
     """Handle a chat message from the distributor."""
     if not message.strip():
         return history, thread_id
 
-    # Build enriched query with optional filters
-    enriched = message.strip()
+    # Truncate input to prevent abuse (Fix #9)
+    enriched = message.strip()[:MAX_MESSAGE_LEN]
     if category and category != "All":
         enriched += f" [category: {category}]"
     if competitor and competitor != "All":
@@ -42,7 +48,11 @@ def chat(message: str, history: list, thread_id: str, category: str, competitor:
     try:
         response = match_graph.search_sync(enriched, thread_id)
     except Exception as e:
-        response = f"Sorry, an error occurred: {str(e)}. Please try again."
+        logger.error(f"Match graph error: {e}", exc_info=True)
+        response = (
+            "Sorry, an error occurred while processing your request. "
+            "Please try again or contact support if the problem persists."
+        )
 
     history.append({"role": "user", "content": message})
     history.append({"role": "assistant", "content": response})
@@ -95,7 +105,7 @@ def get_suggestions(partial):
 
 def get_company_choices():
     companies = db.get_companies()
-    non_my = [c for c in companies if c.lower() not in ("my_company", "{my_company}")]
+    non_my = [c for c in companies if c.lower() not in ("danfoss",)]
     return ["All"] + non_my
 
 
@@ -126,15 +136,15 @@ CATEGORY_MAP = {
     "Hoses & Fittings": "hoses_fittings",
 }
 
-with gr.Blocks(title="Product Finder") as distributor_ui:
+with gr.Blocks(title="Danfoss Product Finder") as distributor_ui:
 
     # State
     thread_id = gr.State(str(uuid.uuid4()))
 
     # Header
     gr.Markdown(
-        "# Product Finder\n"
-        "### Find our equivalent for any competitor hydraulic product"
+        "# Danfoss Product Finder\n"
+        "### Find the Danfoss equivalent for any competitor hydraulic product"
     )
 
     # Chat area
@@ -148,7 +158,7 @@ with gr.Blocks(title="Product Finder") as distributor_ui:
         with gr.Row():
             message = gr.Textbox(
                 show_label=False,
-                placeholder="Enter competitor model code (e.g. DG4V-3-2A-M-U-H7-60)...",
+                placeholder="Enter competitor model code (e.g. 4WE6D6X/EG24N9K4, Parker D1VW, ATOS DHI)...",
                 scale=4,
                 container=False,
             )
@@ -184,9 +194,9 @@ with gr.Blocks(title="Product Finder") as distributor_ui:
     # Example prompts
     gr.Examples(
         examples=[
-            "DG4V-3-2A-M-U-H7-60",
-            "Parker D1VW",
-            "Bosch Rexroth 4WE6",
+            "4WE6D6X/EG24N9K4",
+            "Parker D1VW020BN",
+            "ATOS DHI-0631/2-X 24DC",
             "24V solenoid directional valve CETOP 5 315 bar",
         ],
         inputs=message,
@@ -228,7 +238,7 @@ with gr.Blocks(title="Product Finder") as distributor_ui:
 
 if __name__ == "__main__":
     distributor_ui.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
+        server_name=os.getenv("DISTRIBUTOR_HOST", "0.0.0.0"),
+        server_port=int(os.getenv("DISTRIBUTOR_PORT", "7860")),
         share=False,
     )

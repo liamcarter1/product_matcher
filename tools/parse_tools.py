@@ -233,13 +233,13 @@ def extract_model_code_patterns_with_llm(
     prompt = f"""You are an expert at reading hydraulic product user guides and extracting model code breakdown information.
 
 Many hydraulic manufacturers include a section showing what each part of a model code means. For example:
-  DG4V - 3 - 2A - M - U - H7 - 60
-  Where: DG4V = Series, 3 = Valve size, 2A = Spool function, M = Solenoid actuation, H7 = 24VDC coil, 60 = Design
+  4WE6 D6X / EG24N9K4
+  Where: 4WE6 = Series (4-way 6mm), D = Spool type, 6X = Size, EG24 = 24VDC coil, N9K4 = Design/seals
 
 Extract ALL model code segment definitions from the following text for company: {company}
 
 For each segment definition, provide:
-- series: the base series name (e.g. "DG4V", "4WE6", "D1VW")
+- series: the base series name (e.g. "4WE6", "D1VW", "DHI")
 - segment_position: which segment this is (0=first after series, 1=second, etc.)
 - segment_name: what this segment represents (use these exact names: valve_size, spool_type, actuator_type, coil_voltage, port_size, port_type, mounting, seal_material, design_series, option_code)
 - code_value: the specific code (e.g. "H7", "3", "2A")

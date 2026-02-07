@@ -56,11 +56,11 @@ class LookupTools:
             partial_code, company=competitor_name, limit=5, threshold=60
         )
 
-        # If competitor_name not specified, filter to non-my_company products
+        # If competitor_name not specified, filter to non-Danfoss products
         if not competitor_name:
             results = [
                 (p, s) for p, s in results
-                if p.company.lower() not in ("my_company", "{my_company}")
+                if p.company.lower() not in ("danfoss",)
             ]
 
         if not results:
@@ -116,16 +116,16 @@ class LookupTools:
     def find_my_company_equivalents(
         self,
         competitor: HydraulicProduct,
-        my_company_name: str = "my_company",
+        my_company_name: str = "Danfoss",
         top_k: int = 5,
     ) -> list[MatchResult]:
-        """Find {my_company} equivalents for a competitor product.
+        """Find Danfoss equivalents for a competitor product.
         Uses semantic search + spec comparison + reranking."""
 
         # Build query from competitor product
         query = self.vs._build_indexable_text(competitor)
 
-        # Semantic search in {my_company} collection
+        # Semantic search in Danfoss collection
         semantic_results = self.vs.search_my_company(
             query=query,
             category=competitor.category or None,

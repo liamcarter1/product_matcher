@@ -19,7 +19,7 @@ A RAG-powered application for cross-referencing competitor hydraulic products ag
 - **Distributor Product Finder** - Chat interface where distributors enter a competitor model code and get the best equivalent with a confidence score
 - **Admin Console** - Upload PDF catalogues and user guides, manage products, review feedback
 - **Smart Matching** - 12-dimension weighted scoring across pressure, flow, coil voltage, mounting, spool type, and more
-- **Fuzzy Model Code Lookup** - Partial codes accepted (e.g. "DG4V-3" finds "DG4V-3-2A-M-U-H7-60")
+- **Fuzzy Model Code Lookup** - Partial codes accepted (e.g. "4WE6" finds "4WE6D6X/EG24N9K4")
 - **75% Confidence Threshold** - Below threshold directs distributors to contact their sales representative
 
 ## Setup
@@ -34,7 +34,13 @@ A RAG-powered application for cross-referencing competitor hydraulic products ag
    export OPENAI_API_KEY=your_key_here
    ```
 
-3. Run the combined app:
+3. (Optional) Set login credentials to protect the web interface:
+   ```bash
+   export ADMIN_USERNAME=admin
+   export ADMIN_PASSWORD=your_password
+   ```
+
+4. Run the combined app:
    ```bash
    python app.py
    ```
@@ -45,9 +51,39 @@ A RAG-powered application for cross-referencing competitor hydraulic products ag
    python admin_app.py        # Port 7861
    ```
 
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENAI_API_KEY` | (required) | OpenAI API key for GPT-4o-mini |
+| `ADMIN_USERNAME` | (none) | Login username (enables Gradio auth when set) |
+| `ADMIN_PASSWORD` | (none) | Login password |
+| `PORT` | `7860` | Port for combined app.py (auto-set by HF Spaces) |
+| `MAX_UPLOAD_SIZE_MB` | `50` | Maximum PDF upload size |
+
+See `CLAUDE.md` for the full list of host/port configuration variables.
+
+## Deploying to Hugging Face Spaces
+
+1. Create a new Space with **Gradio** SDK
+2. Push the `product_matcher/` directory as the repo contents
+3. Set **Space Secrets**: `OPENAI_API_KEY`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`
+4. The app binds to `0.0.0.0` and reads the `PORT` env var automatically
+5. Both the Product Finder and Admin Console are available in a single tabbed interface
+
 ## Architecture
 
 - **LangGraph** StateGraph with MemorySaver for conversation persistence
 - **Numpy-based vector store** with sentence-transformers embeddings + cross-encoder reranking
 - **SQLite** for structured product data, model code patterns, confirmed equivalents, and feedback
 - **Gradio** for both the distributor and admin interfaces
+
+## Security
+
+- Optional Gradio login authentication (username/password via env vars)
+- Server-side PDF validation (magic bytes, size limits)
+- Input length limits on all user-facing fields
+- Sanitised error messages (no file paths or API keys exposed)
+- Thread-safe database writes with locking
+- Atomic file writes for vector store persistence
+- LLM call resilience with regex-based fallback parsing

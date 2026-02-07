@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-ProductMatchPro is a RAG-powered hydraulic product cross-reference application. Distributors type a competitor model code (partial allowed) and get the best equivalent product from {my_company} with a confidence score. If confidence is below 75%, they are directed to contact their sales representative.
+ProductMatchPro is a RAG-powered hydraulic product cross-reference application. Distributors type a competitor model code (partial allowed) and get the best equivalent Danfoss product with a confidence score. If confidence is below 75%, they are directed to contact their sales representative.
 
 Two separate Gradio interfaces:
 - **Distributor app** (`distributor_app.py`, port 7860) - Clean chat interface for product lookup
@@ -51,10 +51,10 @@ LLM: `ChatOpenAI(model="gpt-4o-mini", temperature=0.1)`
 - `model_code_patterns` - Decode rules for model code segments (extracted from user guides)
 - `confirmed_equivalents` - Manual overrides from admin (bypasses algorithmic matching)
 - `feedback` - Distributor thumbs up/down on results
-- `synonyms` - Brand name mappings (e.g. "Vickers" -> "Eaton")
+- `synonyms` - Brand name mappings (e.g. "Rexroth" -> "Bosch Rexroth")
 
 **Numpy Vector Store** (`storage/vector_store.py`) - 3 collections:
-- `my_company_products` - Searched with cross-encoder reranking
+- `danfoss_products` - Searched with cross-encoder reranking
 - `competitor_products` - Semantic fallback when fuzzy lookup fails
 - `product_guides` - User guide text chunks
 
@@ -99,25 +99,25 @@ Missing specs score 0.5 (neutral), not 0.0.
 - RecursiveCharacterTextSplitter: chunk_size=1000, overlap=200
 
 ### Configurable Values (`graph.py`)
-- `MY_COMPANY_NAME = "my_company"` - Replace with actual company name
-- `SALES_CONTACT = "sales@my_company.com | +44 (0)XXX XXX XXXX"` - Update with real contact
+- `MY_COMPANY_NAME = "Danfoss"` - Company name used in prompts and responses
+- `SALES_CONTACT = "sales@danfoss.com | +44 (0)XXX XXX XXXX"` - Update with real contact number
 
 ## File Structure
 
 ```
 product_matcher/
-  app.py                 (28 lines)   Combined HF Spaces entry point
-  distributor_app.py    (235 lines)   Distributor chat UI
-  admin_app.py          (421 lines)   Admin console UI
-  graph.py              (473 lines)   LangGraph matching workflow
+  app.py                 (~40 lines)  Combined HF Spaces entry point (auth-enabled)
+  distributor_app.py    (~245 lines)  Distributor chat UI (auth, sanitised errors)
+  admin_app.py          (~480 lines)  Admin console UI (auth, gr.State, PDF validation)
+  graph.py              (~510 lines)  LangGraph matching workflow (LLM fallback)
   ingest.py             (220 lines)   PDF ingestion pipeline
   models.py             (211 lines)   Pydantic models & constants
   prompts.py             (69 lines)   LLM system prompts
   requirements.txt       (32 lines)   Dependencies
-  .env                               OPENAI_API_KEY (gitignored)
+  .env                               OPENAI_API_KEY + auth credentials (gitignored)
   storage/
-    product_db.py       (604 lines)   SQLite CRUD + fuzzy lookup + spec comparison
-    vector_store.py     (355 lines)   Numpy vector store + reranking
+    product_db.py       (~620 lines)  SQLite CRUD + fuzzy lookup (thread-safe writes)
+    vector_store.py     (~380 lines)  Numpy vector store + reranking (atomic saves)
   tools/
     lookup_tools.py     (237 lines)   Product identification & matching
     parse_tools.py      (279 lines)   PDF table/text extraction + LLM extraction
@@ -147,7 +147,7 @@ Don't initialize at module level. Use lazy `_get_client()` pattern (`tools/parse
 ChromaDB is incompatible (pydantic v1). The vector store uses numpy instead. The `langchain_core` pydantic v1 deprecation warning is expected and harmless.
 
 ### Admin State
-`pending_extractions` and `pending_metadata` in `admin_app.py` are module-level globals - not thread-safe for concurrent admin users. Fine for single-user admin use.
+`pending_extractions` and `pending_metadata` in `admin_app.py` use `gr.State({})` — session-scoped and safe for concurrent admin users.
 
 ## Development Patterns
 
@@ -181,6 +181,46 @@ Matching: fuzzywuzzy, python-Levenshtein
 Data: pandas (admin CSV export)
 Config: python-dotenv
 
+## Security Hardening (v2)
+
+The following security and resilience fixes have been applied:
+
+### Authentication
+- Admin and distributor apps support Gradio login via `ADMIN_USERNAME` / `ADMIN_PASSWORD` env vars
+- Combined `app.py` uses the same credentials
+- Authentication is optional in local dev but recommended for any network-facing deployment
+
+### Session Isolation
+- `pending_extractions` and `pending_metadata` in `admin_app.py` now use `gr.State({})` instead of module-level globals — safe for concurrent admin users
+
+### Input Validation & Sanitisation
+- Server-side PDF validation: checks magic bytes (`%PDF`), file size limits, and empty files
+- Input length limits on all user-facing text fields (500 chars for chat, 200 for model codes/search)
+- Error messages are sanitised — no file paths, API keys, or stack traces leak to the UI
+
+### Thread Safety
+- `threading.Lock` on all write operations in `product_db.py` and `vector_store.py`
+- Atomic file writes in vector store (temp file + rename pattern) to prevent corruption on crash
+
+### LLM Resilience
+- `graph.py:parse_query()` wraps the LLM call in try/except with a regex-based fallback parser
+- If OpenAI is unreachable, the regex fallback extracts model codes, competitor names, and categories from user input
+- Cross-encoder reranking scores are clamped to `[0.0, 1.0]` to prevent Pydantic validation errors
+
+### Configurable Binding
+- All apps use env vars for host/port — critical for HF Spaces (`0.0.0.0` binding required)
+- `max_file_size` set on Gradio launch to enforce upload limits server-side
+
 ## Environment Variables
 
-- `OPENAI_API_KEY` (required) - Used by GPT-4o-mini for query parsing, product extraction, and comparison narratives
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENAI_API_KEY` | (required) | Used by GPT-4o-mini for query parsing, product extraction, and comparison narratives |
+| `ADMIN_USERNAME` | (none) | Login username for Gradio auth (optional, but recommended for deployed apps) |
+| `ADMIN_PASSWORD` | (none) | Login password for Gradio auth (optional, but recommended for deployed apps) |
+| `ADMIN_HOST` | `127.0.0.1` | Bind address for admin_app.py |
+| `ADMIN_PORT` | `7861` | Port for admin_app.py |
+| `DISTRIBUTOR_HOST` | `0.0.0.0` | Bind address for distributor_app.py |
+| `DISTRIBUTOR_PORT` | `7860` | Port for distributor_app.py |
+| `PORT` | `7860` | Port for combined app.py (HF Spaces sets this automatically) |
+| `MAX_UPLOAD_SIZE_MB` | `50` | Maximum PDF upload size in megabytes |
