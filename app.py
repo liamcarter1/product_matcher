@@ -12,11 +12,13 @@ import gradio as gr
 from distributor_app import distributor_ui
 from admin_app import admin_ui
 
-app = gr.TabbedInterface(
-    interface_list=[distributor_ui, admin_ui],
-    tab_names=["Product Finder", "Admin Console"],
-    title="ProductMatchPro - Hydraulic Product Cross-Reference",
-)
+with gr.Blocks(title="ProductMatchPro - Hydraulic Product Cross-Reference") as app:
+    gr.Markdown("# ProductMatchPro - Hydraulic Product Cross-Reference")
+    with gr.Tabs():
+        with gr.Tab("Product Finder"):
+            distributor_ui.render()
+        with gr.Tab("Admin Console"):
+            admin_ui.render()
 
 if __name__ == "__main__":
     app.launch(

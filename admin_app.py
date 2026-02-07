@@ -39,14 +39,15 @@ def process_upload(file, company, doc_type, category):
     if file is None:
         return "Please upload a PDF file.", None
 
+    # Gradio 5 with type="filepath" passes a string path
+    file_path = str(file)
+
     metadata = UploadMetadata(
         company=company.strip() if company else "Unknown",
         document_type=DocumentType(doc_type),
         category=category if category != "All / Auto-detect" else "",
-        filename=Path(file.name).name if hasattr(file, 'name') else "upload.pdf",
+        filename=Path(file_path).name,
     )
-
-    file_path = file.name if hasattr(file, 'name') else str(file)
 
     try:
         extracted = pipeline.process_pdf(file_path, metadata)
@@ -148,6 +149,7 @@ def search_products(search_term, company_filter):
 
 def export_csv():
     """Export all products as CSV."""
+    import tempfile
     products = db.get_all_products()
     rows = []
     for p in products:
@@ -156,7 +158,7 @@ def export_csv():
         row.pop("raw_text", None)
         rows.append(row)
     df = pd.DataFrame(rows)
-    csv_path = str(Path(__file__).parent / "data" / "products_export.csv")
+    csv_path = str(Path(tempfile.gettempdir()) / "products_export.csv")
     df.to_csv(csv_path, index=False)
     return csv_path
 
@@ -250,10 +252,7 @@ CATEGORIES = [
     "filters", "accumulators", "hoses_fittings", "other",
 ]
 
-with gr.Blocks(
-    title="ProductMatchPro - Admin Console",
-    theme=gr.themes.Default(primary_hue="blue"),
-) as admin_ui:
+with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
 
     gr.Markdown("# ProductMatchPro - Admin Console")
     gr.Markdown("Manage product database, upload catalogues, and review distributor feedback.")

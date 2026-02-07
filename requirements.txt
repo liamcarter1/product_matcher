@@ -20,11 +20,12 @@ sentence-transformers>=2.3.0
 fuzzywuzzy>=0.18.0
 python-Levenshtein>=0.21.0
 
-# Data models
+# Data handling
 pydantic>=2.0.0
+pandas>=2.0.0
 
 # UI
-gradio>=5.22.0
+gradio>=5.0.0
 
 # Utilities
 python-dotenv>=1.0.0

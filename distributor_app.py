@@ -6,7 +6,6 @@ Run: python distributor_app.py
 """
 
 import gradio as gr
-import asyncio
 import uuid
 from dotenv import load_dotenv
 
@@ -89,9 +88,9 @@ def submit_feedback(history, thumbs_up):
 def get_suggestions(partial):
     """Get typeahead suggestions as the user types."""
     if not partial or len(partial) < 2:
-        return gr.update(choices=[])
+        return gr.Dropdown(choices=[])
     suggestions = lookup.get_typeahead_suggestions(partial, limit=8)
-    return gr.update(choices=suggestions)
+    return gr.Dropdown(choices=suggestions)
 
 
 def get_company_choices():
@@ -127,15 +126,7 @@ CATEGORY_MAP = {
     "Hoses & Fittings": "hoses_fittings",
 }
 
-with gr.Blocks(
-    title="Product Finder",
-    theme=gr.themes.Default(primary_hue="emerald"),
-    css="""
-    .confidence-high { color: #16a34a; font-weight: bold; }
-    .confidence-low { color: #dc2626; }
-    footer { display: none !important; }
-    """,
-) as distributor_ui:
+with gr.Blocks(title="Product Finder") as distributor_ui:
 
     # State
     thread_id = gr.State(str(uuid.uuid4()))
@@ -150,8 +141,6 @@ with gr.Blocks(
     chatbot = gr.Chatbot(
         label="Product Search",
         height=450,
-        type="messages",
-        show_copy_button=True,
     )
 
     # Input area

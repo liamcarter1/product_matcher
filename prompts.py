@@ -34,7 +34,7 @@ Keep it professional and factual. Do not make up specifications - only reference
 
 Competitor Product: {competitor_code} ({competitor_company})
 {my_company} Equivalent: {my_company_code}
-Confidence Score: {confidence}%
+Confidence Score: {confidence}
 
 Specification Comparison:
 {spec_table}
@@ -42,7 +42,7 @@ Specification Comparison:
 Score Breakdown:
 {score_breakdown}"""
 
-BELOW_THRESHOLD_PROMPT = """The best match found has a confidence score of {confidence}% which is below our {threshold}% threshold for recommending a direct equivalent.
+BELOW_THRESHOLD_PROMPT = """The best match found has a confidence score of {confidence} which is below our {threshold} threshold for recommending a direct equivalent.
 
 This means we cannot confidently recommend a drop-in replacement. The closest options found are listed below for reference, but we recommend contacting your local sales representative for a verified recommendation.
 
