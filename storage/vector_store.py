@@ -322,6 +322,22 @@ class VectorStore:
         )
         return [(doc_id, text, score) for doc_id, text, _, score in results]
 
+    def search_guides_with_metadata(
+        self, query: str, company: Optional[str] = None,
+        model_code: Optional[str] = None, n_results: int = 5,
+    ) -> list[tuple[str, str, dict, float]]:
+        """Search guide chunks with metadata. Returns (chunk_id, text, metadata, score)."""
+        where = {}
+        if company:
+            where["company"] = company
+        if model_code:
+            where["model_code"] = model_code
+
+        query_embedding = self.embedder.encode(query)
+        return self.guides_col.search(
+            query_embedding, n_results, where=where if where else None
+        )
+
     def delete_product(self, product_id: str, company: str):
         collection = self._get_collection(company)
         collection.delete(product_id)

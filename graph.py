@@ -28,6 +28,7 @@ from prompts import (
     BELOW_THRESHOLD_PROMPT,
     CLARIFICATION_PROMPT,
     NO_MATCH_PROMPT,
+    KB_QA_PROMPT,
 )
 
 load_dotenv(override=True)
@@ -45,6 +46,7 @@ class MatchState(TypedDict):
     candidate_matches: Optional[list[dict]]
     needs_clarification: bool
     clarification_options: Optional[list[str]]
+    kb_context: Optional[list[dict]]
 
 
 class MatchGraph:
@@ -71,10 +73,23 @@ class MatchGraph:
         graph.add_node("clarify", self.clarify)
         graph.add_node("find_equivalents", self.find_equivalents)
         graph.add_node("generate_response", self.generate_response)
+        graph.add_node("retrieve_kb_context", self.retrieve_kb_context)
+        graph.add_node("generate_kb_answer", self.generate_kb_answer)
 
         # Edges
         graph.add_edge(START, "parse_query")
-        graph.add_edge("parse_query", "lookup_competitor")
+        graph.add_conditional_edges(
+            "parse_query",
+            self._route_after_parse,
+            {
+                "kb_retrieval": "retrieve_kb_context",
+                "product_matching": "lookup_competitor",
+            },
+        )
+        # KB Q&A path
+        graph.add_edge("retrieve_kb_context", "generate_kb_answer")
+        graph.add_edge("generate_kb_answer", END)
+        # Product matching path (unchanged)
         graph.add_conditional_edges(
             "lookup_competitor",
             self._route_after_lookup,
@@ -336,7 +351,102 @@ class MatchGraph:
 
         return {"messages": [AIMessage(content=message)]}
 
+    # ── KB Q&A Nodes ─────────────────────────────────────────────────
+
+    def retrieve_kb_context(self, state: MatchState) -> dict:
+        """Retrieve relevant knowledge base chunks for a general info question."""
+        query = state.get("query", "")
+        parsed = state.get("parsed_query", {})
+
+        model_code = parsed.get("model_code")
+        competitor_name = parsed.get("competitor_name")
+
+        # Search product guides (primary source)
+        results = self.vs.search_guides_with_metadata(
+            query=query,
+            company=competitor_name,
+            model_code=model_code if model_code else None,
+            n_results=8,
+        )
+
+        # If model_code filter returned nothing, retry without it
+        if not results and model_code:
+            results = self.vs.search_guides_with_metadata(
+                query=query, n_results=8,
+            )
+
+        # Build structured context, filtering low-relevance and deduplicating
+        kb_chunks = []
+        seen_texts = set()
+        for chunk_id, text, metadata, score in results:
+            if score < 0.3:
+                continue
+            text_key = text[:100]
+            if text_key in seen_texts:
+                continue
+            seen_texts.add(text_key)
+            kb_chunks.append({
+                "text": text,
+                "source": metadata.get("source_document", "unknown"),
+                "company": metadata.get("company", ""),
+                "score": round(float(score), 3),
+            })
+
+        return {"kb_context": kb_chunks}
+
+    def generate_kb_answer(self, state: MatchState) -> dict:
+        """Generate a grounded answer from knowledge base context."""
+        query = state.get("query", "")
+        kb_chunks = state.get("kb_context", [])
+
+        if not kb_chunks:
+            message = (
+                "I couldn't find specific information about that in our product documentation.\n\n"
+                "This could mean the topic isn't covered in the documents we have on file, "
+                "or it may require more specific search terms.\n\n"
+                f"Please contact your local sales representative for assistance:\n{SALES_CONTACT}"
+            )
+            return {"messages": [AIMessage(content=message)]}
+
+        # Build context block and source list
+        context_parts = []
+        source_set = set()
+        for i, chunk in enumerate(kb_chunks, 1):
+            context_parts.append(f"[{i}] {chunk['text']}")
+            if chunk["source"] and chunk["source"] != "unknown":
+                source_set.add(chunk["source"])
+
+        context_block = "\n\n".join(context_parts)
+        sources_text = ", ".join(sorted(source_set)) if source_set else "product documentation"
+
+        prompt = KB_QA_PROMPT.format(
+            my_company=MY_COMPANY_NAME,
+            question=query,
+            context=context_block,
+            sources=sources_text,
+        )
+
+        try:
+            response = self.llm.invoke([HumanMessage(content=prompt)])
+            answer = response.content
+        except Exception as e:
+            logger.warning(f"LLM generate_kb_answer failed: {e}")
+            answer = (
+                "I found some relevant information but encountered an error generating the answer. "
+                f"Please try again or contact your sales representative:\n{SALES_CONTACT}"
+            )
+
+        return {"messages": [AIMessage(content=answer)]}
+
     # ── Routing ───────────────────────────────────────────────────────
+
+    def _route_after_parse(self, state: MatchState) -> str:
+        """Route based on detected intent: info queries go to KB, everything else to product matching."""
+        parsed = state.get("parsed_query", {})
+        intent = parsed.get("intent", "lookup")
+        if intent == "info":
+            return "kb_retrieval"
+        return "product_matching"
 
     def _route_after_lookup(self, state: MatchState) -> str:
         comp_data = state.get("identified_competitor", {})

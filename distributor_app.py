@@ -198,6 +198,8 @@ with gr.Blocks(title="Danfoss Product Finder") as distributor_ui:
             "Parker D1VW020BN",
             "ATOS DHI-0631/2-X 24DC",
             "24V solenoid directional valve CETOP 5 315 bar",
+            "What coil voltages are available for the 4WE6 series?",
+            "What's the difference between NBR and FKM seals?",
         ],
         inputs=message,
         label="Try these examples:",
