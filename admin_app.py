@@ -462,7 +462,7 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
                     upload_status = gr.Textbox(label="Status", lines=3)
                     review_table = gr.Dataframe(
                         label="Extracted Products (review before confirming)",
-                        interactive=False,
+                        interactive=True,
                     )
                     confirm_btn = gr.Button("Confirm & Index", variant="secondary")
                     confirm_status = gr.Textbox(label="Confirmation Status")
@@ -496,14 +496,14 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
             product_table = gr.Dataframe(
                 label="Products",
                 value=get_product_counts(),
-                interactive=False,
+                interactive=True,
             )
 
             with gr.Row():
                 count_table = gr.Dataframe(
                     label="Product Counts",
                     value=get_product_counts(),
-                    interactive=False,
+                    interactive=True,
                 )
 
             with gr.Row():
@@ -537,7 +537,7 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
             feedback_table = gr.Dataframe(
                 label="Distributor Feedback",
                 value=get_feedback(),
-                interactive=False,
+                interactive=True,
             )
             refresh_feedback_btn = gr.Button("Refresh")
             refresh_feedback_btn.click(
