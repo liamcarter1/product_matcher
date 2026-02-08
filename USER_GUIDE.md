@@ -129,12 +129,12 @@ The left side contains the upload form, and the right side shows the results.
 
 5. **Click "Upload & Process"**
    The system will:
-   - Parse the PDF using pdfplumber (for tables) and pypdf (for text)
+   - Parse the PDF using **PyMuPDF** (for high-quality text from ALL pages), supplemented by **pdfplumber** (for structured tables and any additional text). This dual-extractor approach ensures complex layouts, multi-column text, operating data tables, and technical specifications are all captured
    - If tables are found, map the table columns to product fields using ~90 header patterns (model code, pressure, flow, voltage, seal material, etc.)
-   - If no tables are found, send the text to GPT-4o-mini for structured product extraction (31 spec fields)
+   - Send text to GPT-4o-mini for structured product extraction (31 spec fields). **The full document is processed in batches** — not truncated — so products from all pages are captured, not just the first few
    - **Ordering code generation:** Detect "Ordering code" / "How to Order" breakdown tables and generate ALL product variants by combining variable segments (e.g. 4 flow rates x 2 seals x 2 interfaces = 16 products)
    - For user guides/datasheets: extract model code decode patterns for future use
-   - Index the full text as searchable guide chunks (1000-character chunks with 200-character overlap)
+   - **Index guide text using two-pass strategy:** Page-level chunks (with `[Page N]` metadata for direct page retrieval) plus full-document chunks (for cross-page context). Chunk size: 1500 characters with 300-character overlap
    - Deduplicate products from all sources, keeping the variant with the most populated specs
 
    The Status field will show a message like:
@@ -500,8 +500,9 @@ This order ensures the richest possible product data for accurate matching. Data
 
 **"No products could be extracted from this PDF"**
 - The PDF may have an unusual format. Try selecting a different Document Type (e.g. switch from "catalogue" to "user_guide")
-- Scanned PDFs without embedded text will not work - the text must be selectable in the PDF
+- Scanned PDFs without embedded text will not work - the text must be selectable in the PDF. The system uses PyMuPDF and pdfplumber for text extraction, not OCR
 - Very large PDFs may time out. Try splitting into smaller sections
+- Check the terminal logs for per-page extraction details — the system now logs how many pages each extractor processed
 
 **"Error processing PDF" or "An error occurred during processing"**
 - Check that your OpenAI API key is set correctly in the `.env` file
@@ -516,6 +517,13 @@ This order ensures the richest possible product data for accurate matching. Data
 - Check if the vector store has been indexed (see the Settings tab for collection counts)
 - Try the "Re-index Vector Store" button on the Product Database tab
 - You can select and copy any text from the admin tables for diagnostic purposes
+
+**Knowledge base questions return "couldn't find specific information"**
+- Ensure user guides have been uploaded AND processed (the "Confirm & Index" step must be completed)
+- Check the Guide Chunks count in Settings tab — if zero, the text wasn't indexed
+- The system now indexes guide text per-page with page number metadata, so specific content (e.g. "operating data on page 6") is directly searchable
+- Try more specific queries — include technical terms that would appear in the document (e.g. "power supply voltage 24V" rather than just "electrical specs")
+- If guides were uploaded before this update, re-upload them to benefit from the improved extraction and two-pass indexing
 
 **Incorrect matches being returned**
 - Create a confirmed equivalent in the Feedback Review tab to override the algorithmic match

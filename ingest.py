@@ -91,8 +91,8 @@ _FIELD_ALIASES = {
 }
 
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=1000,
-    chunk_overlap=200,
+    chunk_size=1500,
+    chunk_overlap=300,
     separators=["\n\n", "\n", ". ", " ", ""],
 )
 
@@ -240,18 +240,54 @@ class IngestionPipeline:
     def index_guide_text(
         self, pdf_path: str, metadata: UploadMetadata
     ) -> int:
-        """Index user guide text chunks for supplementary search."""
-        pages = extract_text_from_pdf(pdf_path)
-        full_text = "\n\n".join(p["text"] for p in pages)
+        """Index user guide text chunks for supplementary search.
 
-        if not full_text:
+        Uses a two-pass strategy for maximum retrieval coverage:
+        1. Page-level chunking: Each page's text is chunked individually,
+           preserving page numbers in metadata and prefixing each chunk
+           with the page context. This ensures page-specific content
+           (e.g. 'Operating data' on page 6) is findable.
+        2. Full-document chunking: The entire document is also chunked
+           as one continuous text to capture cross-page information.
+
+        Larger chunks (1500 chars, 300 overlap) preserve more context
+        for technical content like specifications and operating data.
+        """
+        pages = extract_text_from_pdf(pdf_path)
+
+        if not pages:
             return 0
 
-        chunks = text_splitter.split_text(full_text)
         chunk_count = 0
 
-        for i, chunk in enumerate(chunks):
-            chunk_id = f"{metadata.filename}_chunk_{i}"
+        # ── Pass 1: Page-level chunks (preserves page context) ──────
+        for page_data in pages:
+            page_num = page_data["page"]
+            page_text = page_data["text"]
+
+            if not page_text or len(page_text.strip()) < 50:
+                continue
+
+            # Prefix each chunk with page info for better retrieval
+            page_prefix = f"[Page {page_num} of {metadata.filename}]\n"
+
+            page_chunks = text_splitter.split_text(page_text)
+            for i, chunk in enumerate(page_chunks):
+                chunk_id = f"{metadata.filename}_p{page_num}_chunk_{i}"
+                self.vector_store.index_guide_chunk(
+                    chunk_id=chunk_id,
+                    text=page_prefix + chunk,
+                    company=metadata.company,
+                    category=metadata.category or "",
+                    source_document=metadata.filename,
+                )
+                chunk_count += 1
+
+        # ── Pass 2: Full-document chunks (captures cross-page info) ─
+        full_text = "\n\n".join(p["text"] for p in pages)
+        full_chunks = text_splitter.split_text(full_text)
+        for i, chunk in enumerate(full_chunks):
+            chunk_id = f"{metadata.filename}_full_chunk_{i}"
             self.vector_store.index_guide_chunk(
                 chunk_id=chunk_id,
                 text=chunk,

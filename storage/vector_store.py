@@ -307,7 +307,7 @@ class VectorStore:
 
     def search_guides(
         self, query: str, company: Optional[str] = None,
-        model_code: Optional[str] = None, n_results: int = 5,
+        model_code: Optional[str] = None, n_results: int = 10,
     ) -> list[tuple[str, str, float]]:
         """Search user guide chunks. Returns (chunk_id, text, score)."""
         where = {}
@@ -324,7 +324,7 @@ class VectorStore:
 
     def search_guides_with_metadata(
         self, query: str, company: Optional[str] = None,
-        model_code: Optional[str] = None, n_results: int = 5,
+        model_code: Optional[str] = None, n_results: int = 15,
     ) -> list[tuple[str, str, dict, float]]:
         """Search guide chunks with metadata. Returns (chunk_id, text, metadata, score)."""
         where = {}

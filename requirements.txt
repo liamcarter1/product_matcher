@@ -8,7 +8,10 @@ langchain-community>=0.3.20
 langgraph>=0.3.18
 langchain-text-splitters>=0.2.0
 
-# PDF parsing
+# PDF parsing — PyMuPDF is the primary extractor (best for complex layouts,
+# multi-column text, operating data tables). pypdf is a lightweight fallback.
+# pdfplumber is used for structured table extraction and supplementary text.
+pymupdf>=1.24.0
 pypdf>=5.4.0
 pdfplumber>=0.10.0
 

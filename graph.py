@@ -406,33 +406,52 @@ class MatchGraph:
     # ── KB Q&A Nodes ─────────────────────────────────────────────────
 
     def retrieve_kb_context(self, state: MatchState) -> dict:
-        """Retrieve relevant knowledge base chunks for a general info question."""
+        """Retrieve relevant knowledge base chunks for a general info question.
+
+        Uses a multi-pass retrieval strategy:
+        1. Search with any detected filters (company, model_code) - 15 results
+        2. If filtered search returned nothing, retry without filters
+        3. Score threshold is low (0.15) to avoid missing relevant content
+           from technical documents where embedding similarity can be modest
+        """
         query = state.get("query", "")
         parsed = state.get("parsed_query", {})
 
         model_code = parsed.get("model_code")
         competitor_name = parsed.get("competitor_name")
 
-        # Search product guides (primary source)
+        # Search product guides — request more results for better coverage
         results = self.vs.search_guides_with_metadata(
             query=query,
             company=competitor_name,
             model_code=model_code if model_code else None,
-            n_results=8,
+            n_results=15,
         )
 
         # If model_code filter returned nothing, retry without it
         if not results and model_code:
             results = self.vs.search_guides_with_metadata(
-                query=query, n_results=8,
+                query=query,
+                company=competitor_name,
+                n_results=15,
             )
 
-        # Build structured context, filtering low-relevance and deduplicating
+        # If company filter returned nothing, retry without any filters
+        if not results and competitor_name:
+            results = self.vs.search_guides_with_metadata(
+                query=query, n_results=15,
+            )
+
+        # Build structured context, filtering very-low-relevance and deduplicating
+        # Use a low threshold (0.15) because technical content embeddings can have
+        # modest similarity scores even when the content is relevant
         kb_chunks = []
         seen_texts = set()
         for chunk_id, text, metadata, score in results:
-            if score < 0.3:
+            if score < 0.15:
                 continue
+            # Deduplicate using first 100 chars (page-level and full-doc chunks
+            # may contain overlapping content)
             text_key = text[:100]
             if text_key in seen_texts:
                 continue

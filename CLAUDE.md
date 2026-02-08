@@ -114,8 +114,25 @@ If the vector store has no indexed Danfoss products, the search falls back to pu
 - Embedding: `sentence-transformers/all-MiniLM-L6-v2`
 - Reranker: `cross-encoder/ms-marco-MiniLM-L-6-v2`
 
+### PDF Text Extraction (`tools/parse_tools.py`)
+Primary extractor: **PyMuPDF (fitz)** — significantly better at extracting text from complex layouts, multi-column pages, operating data tables, and technical specifications. Falls back to pypdf if PyMuPDF is not installed.
+
+Supplementary extractor: **pdfplumber** — runs as a second pass to capture any table-adjacent text the primary extractor missed. If pdfplumber finds a page with 100+ more characters than the primary, the additional content is merged.
+
+LLM product extraction now processes the **full document** in 10,000-char batches (previously truncated at 12,000 chars, missing ~55% of a 19-page guide). Results are merged and deduplicated by model code.
+
 ### Text Chunking (`ingest.py`)
-- RecursiveCharacterTextSplitter: chunk_size=1000, overlap=200
+- RecursiveCharacterTextSplitter: chunk_size=1500, overlap=300
+
+### Guide Indexing Strategy (`ingest.py:index_guide_text`)
+Two-pass indexing for maximum retrieval coverage:
+1. **Page-level chunks**: Each page is chunked individually with `[Page N of filename.pdf]` prefixes, preserving page context. This makes page-specific content (e.g. "Operating data" on page 6) directly searchable.
+2. **Full-document chunks**: The entire document is chunked as one continuous text to capture cross-page information.
+
+### KB Q&A Retrieval (`graph.py:retrieve_kb_context`)
+- Retrieves 15 results (not 8) for better coverage
+- Score threshold: 0.15 (not 0.3) — technical content embeddings often have modest similarity scores
+- Multi-pass filter relaxation: tries with filters first, then progressively removes company/model_code filters if no results found
 
 ### Numeric Parsing (`parse_tools.py`)
 `_parse_numeric_if_possible()` only converts values that ARE pure numbers (or number+unit like "315 bar"). Preserves mixed alpha-numeric values: "24VDC", "G3/8", "FKM", "ISO 4401-03" are all returned as strings, not corrupted.
@@ -139,7 +156,7 @@ product_matcher/
   distributor_app.py    (~270 lines)  Distributor chat UI (Gradio 5/6 compat, dynamic dropdowns)
   admin_app.py          (~605 lines)  Admin console UI (interactive tables, auth, gr.State)
   graph.py              (~650 lines)  LangGraph matching workflow (7 nodes, diagnostics)
-  ingest.py             (~240 lines)  PDF ingestion pipeline + ordering code generation
+  ingest.py             (~280 lines)  PDF ingestion pipeline (two-pass guide indexing) + ordering code generation
   models.py             (~240 lines)  Pydantic models & constants (incl. OrderingCode*)
   prompts.py            (~100 lines)  LLM system prompts (incl. KB_QA_PROMPT)
   requirements.txt       (32 lines)   Dependencies
@@ -149,7 +166,7 @@ product_matcher/
     vector_store.py     (~400 lines)  Numpy vector store + reranking (atomic saves)
   tools/
     lookup_tools.py     (~250 lines)  Product identification & matching (with DB fallback)
-    parse_tools.py      (~520 lines)  PDF extraction + ordering code combinatorial generation
+    parse_tools.py      (~620 lines)  PDF extraction (PyMuPDF + pdfplumber + pypdf fallback) + batched LLM extraction + ordering code combinatorial generation
   data/                              Gitignored runtime data (.db, .npz, .json)
 ```
 
@@ -199,7 +216,7 @@ ChromaDB is incompatible (pydantic v1). The vector store uses numpy instead. The
 ### Adding a New Competitor
 Upload their catalogue/user guide PDF via the admin console. The pipeline:
 1. pdfplumber extracts tables -> maps ~90 header patterns to product fields
-2. pypdf extracts text -> GPT-4o-mini structures products (31 spec fields, fallback)
+2. PyMuPDF (fitz) extracts text from ALL pages (supplemented by pdfplumber) -> GPT-4o-mini structures products (31 spec fields) in batches covering the full document
 3. GPT-4o-mini extracts ordering code breakdown tables -> combinatorial generator creates all product variants (capped at 500)
 4. For user guides/datasheets: GPT-4o-mini also extracts model code decode patterns
 5. Deduplication merges products from all sources (keeps richest specs)
@@ -247,7 +264,7 @@ Must be added in **6 places**:
 ## Dependencies
 
 Core: openai, langchain-openai, langgraph, sentence-transformers, numpy, pydantic, gradio
-PDF: pypdf, pdfplumber
+PDF: pymupdf (primary extractor), pypdf (fallback), pdfplumber (tables + supplementary text)
 Matching: fuzzywuzzy, python-Levenshtein
 Data: pandas (admin CSV export)
 Config: python-dotenv

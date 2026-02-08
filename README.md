@@ -19,6 +19,7 @@ A RAG-powered application for cross-referencing competitor hydraulic products ag
 - **Distributor Product Finder** - Chat interface where distributors enter a competitor model code and get the best equivalent with a confidence score
 - **Knowledge Base Q&A** - Distributors can ask general questions about products and get answers grounded in uploaded documentation
 - **Admin Console** - Upload PDF catalogues and user guides, manage products, review feedback
+- **Comprehensive PDF Extraction** - PyMuPDF (fitz) primary extractor with pdfplumber supplementary pass captures ALL pages including complex layouts, operating data tables, and technical specifications. Full-document LLM processing in batches (no truncation)
 - **Ordering Code Generation** - Automatically reads "How to Order" tables from datasheets and generates ALL product variants as separate database entries with fully populated specs
 - **Smart Matching** - 12-dimension weighted scoring with fuzzy string tolerance (e.g. "24VDC" matches "24 VDC") and DB fallback when vector store is empty
 - **Fuzzy Model Code Lookup** - Partial codes accepted (e.g. "4WE6" finds "4WE6D6X/EG24N9K4")
@@ -77,6 +78,8 @@ See `CLAUDE.md` for the full list of host/port configuration variables.
 ## Architecture
 
 - **LangGraph** StateGraph (7 nodes) with MemorySaver for conversation persistence
+- **Multi-extractor PDF pipeline** - PyMuPDF (fitz) for primary text, pdfplumber for tables and supplementary text, batched GPT-4o-mini extraction covering ALL pages (not truncated)
+- **Two-pass guide indexing** - Page-level chunks (with page number metadata) + full-document chunks for maximum retrieval coverage
 - **Ordering code combinatorial engine** - Parses "How to Order" tables via GPT-4o-mini, generates all product variants via `itertools.product()` (capped at 500)
 - **Fuzzy spec matching** with normalisation tolerance and DB fallback when the vector index is empty
 - **Numpy-based vector store** with sentence-transformers embeddings + cross-encoder reranking

@@ -7,13 +7,23 @@ Uses pdfplumber for tables and pypdf + LLM for unstructured text.
 import re
 import uuid
 import itertools
+import logging
 from pathlib import Path
 from typing import Optional
 import pdfplumber
-from pypdf import PdfReader
 from openai import OpenAI
 from dotenv import load_dotenv
 import json
+
+logger = logging.getLogger(__name__)
+
+# PyMuPDF (fitz) for high-quality text extraction — optional fallback to pypdf
+try:
+    import fitz as _fitz  # PyMuPDF
+    HAS_PYMUPDF = True
+except ImportError:
+    HAS_PYMUPDF = False
+    from pypdf import PdfReader as _PdfReader
 
 from models import (
     ExtractedProduct, HydraulicProduct, UploadMetadata,
@@ -166,14 +176,90 @@ def extract_tables_from_pdf(pdf_path: str) -> list[list[dict]]:
 
 
 def extract_text_from_pdf(pdf_path: str) -> list[dict]:
-    """Extract text from each page of a PDF using pypdf.
-    Returns list of {page: int, text: str}."""
+    """Extract text from each page of a PDF using the best available library.
+
+    Uses PyMuPDF (fitz) when available — significantly better extraction of
+    complex layouts, multi-column text, tables-as-text, and operating data.
+    Falls back to pypdf if PyMuPDF is not installed.
+
+    Also extracts text from pdfplumber as a supplementary source, since
+    pdfplumber sometimes captures table-adjacent text that other parsers miss.
+
+    Returns list of {page: int, text: str} for ALL pages with content.
+    """
+    pages = []
+
+    # ── Primary extraction: PyMuPDF (fitz) or pypdf ─────────────────
+    if HAS_PYMUPDF:
+        try:
+            doc = _fitz.open(pdf_path)
+            for i, page in enumerate(doc):
+                # "text" mode gives clean text; "blocks" preserves layout
+                text = page.get_text("text")
+                if text and text.strip():
+                    pages.append({"page": i + 1, "text": text.strip()})
+            doc.close()
+            logger.info(f"PyMuPDF extracted text from {len(pages)}/{len(pages)} pages")
+        except Exception as e:
+            logger.warning(f"PyMuPDF extraction failed, falling back to pypdf: {e}")
+            pages = _extract_text_pypdf(pdf_path)
+    else:
+        pages = _extract_text_pypdf(pdf_path)
+
+    # ── Supplementary extraction: pdfplumber text ───────────────────
+    # pdfplumber captures text differently — especially table-adjacent text.
+    # Merge any pages where pdfplumber got more content than the primary extractor.
+    try:
+        plumber_pages = _extract_text_pdfplumber(pdf_path)
+        existing_page_nums = {p["page"] for p in pages}
+        existing_by_page = {p["page"]: p for p in pages}
+
+        for pp in plumber_pages:
+            page_num = pp["page"]
+            if page_num not in existing_page_nums:
+                # pdfplumber found a page the primary extractor missed entirely
+                pages.append(pp)
+                logger.info(f"pdfplumber rescued page {page_num} missed by primary extractor")
+            else:
+                # If pdfplumber got significantly more text, append it
+                existing_text = existing_by_page[page_num]["text"]
+                plumber_text = pp["text"]
+                # Check if pdfplumber has unique content (at least 100 new chars)
+                if len(plumber_text) > len(existing_text) + 100:
+                    # Merge: keep primary text and append pdfplumber's extra content
+                    merged = existing_text + "\n\n[Additional extracted content]\n" + plumber_text
+                    existing_by_page[page_num]["text"] = merged
+
+        # Re-sort by page number
+        pages.sort(key=lambda p: p["page"])
+    except Exception as e:
+        logger.warning(f"Supplementary pdfplumber text extraction failed: {e}")
+
+    logger.info(f"Total text extraction: {len(pages)} pages from {pdf_path}")
+    return pages
+
+
+def _extract_text_pypdf(pdf_path: str) -> list[dict]:
+    """Fallback text extraction using pypdf."""
+    from pypdf import PdfReader
     reader = PdfReader(pdf_path)
     pages = []
     for i, page in enumerate(reader.pages):
         text = page.extract_text()
         if text and text.strip():
             pages.append({"page": i + 1, "text": text.strip()})
+    return pages
+
+
+def _extract_text_pdfplumber(pdf_path: str) -> list[dict]:
+    """Extract raw text from each page using pdfplumber.
+    Captures text that surrounds tables and structured elements."""
+    pages = []
+    with pdfplumber.open(pdf_path) as pdf:
+        for i, page in enumerate(pdf.pages):
+            text = page.extract_text()
+            if text and text.strip():
+                pages.append({"page": i + 1, "text": text.strip()})
     return pages
 
 
@@ -211,7 +297,54 @@ def table_rows_to_products(
 def extract_products_with_llm(
     text: str, metadata: UploadMetadata
 ) -> list[ExtractedProduct]:
-    """Use GPT-4o-mini to extract products from unstructured text."""
+    """Use GPT-4o-mini to extract products from unstructured text.
+
+    Processes text in batches to ensure ALL pages are covered — not just the first
+    12,000 characters. Each batch is sent to the LLM independently, then results
+    are merged and deduplicated.
+    """
+    if not text or not text.strip():
+        return []
+
+    # Split into batches of ~10,000 chars each (with overlap for context)
+    BATCH_SIZE = 10000
+    BATCH_OVERLAP = 500
+    batches = []
+    start = 0
+    while start < len(text):
+        end = start + BATCH_SIZE
+        batches.append(text[start:end])
+        start = end - BATCH_OVERLAP
+        if start >= len(text):
+            break
+
+    logger.info(f"LLM product extraction: {len(batches)} batch(es) from {len(text)} chars")
+
+    all_products = []
+    for batch_idx, batch_text in enumerate(batches):
+        batch_products = _extract_products_from_batch(batch_text, metadata, batch_idx + 1)
+        all_products.extend(batch_products)
+
+    # Deduplicate by model_code (keep the one with more specs)
+    seen = {}
+    for p in all_products:
+        key = p.model_code.upper().strip()
+        if key in seen:
+            existing = seen[key]
+            existing_count = sum(1 for v in existing.specs.values() if v is not None and v != "")
+            new_count = sum(1 for v in p.specs.values() if v is not None and v != "")
+            if new_count > existing_count:
+                seen[key] = p
+        else:
+            seen[key] = p
+
+    return list(seen.values())
+
+
+def _extract_products_from_batch(
+    text: str, metadata: UploadMetadata, batch_num: int = 1
+) -> list[ExtractedProduct]:
+    """Extract products from a single text batch using GPT-4o-mini."""
     prompt = f"""You are an expert at extracting hydraulic product specifications from technical documents.
 
 Extract ALL products mentioned in the following text. For each product, extract:
@@ -255,7 +388,7 @@ Document type: {metadata.document_type}
 Return a JSON object with key "products" containing an array of objects. Only include fields where you found actual data. If no products found, return {{"products": []}}.
 
 Text:
-{text[:12000]}"""
+{text}"""
 
     try:
         response = _get_client().chat.completions.create(
@@ -286,7 +419,7 @@ Text:
             ))
         return products
     except Exception as e:
-        print(f"LLM extraction error: {e}")
+        logger.error(f"LLM extraction error (batch {batch_num}): {e}")
         return []
 
 
