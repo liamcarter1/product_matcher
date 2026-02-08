@@ -280,8 +280,20 @@ class MatchGraph:
             top_k=5,
         )
 
+        # Gather diagnostics for the response node
+        my_product_count = len(self.db.get_all_products(company=MY_COMPANY_NAME))
+        vs_counts = self.vs.get_collection_counts()
+
         return {
             "candidate_matches": [m.model_dump() for m in matches],
+            "identified_competitor": {
+                **comp_data,
+                "_diagnostics": {
+                    "my_product_count": my_product_count,
+                    "vs_my_company_count": vs_counts.get("my_company", 0),
+                    "num_candidates_scored": len(matches),
+                },
+            },
         }
 
     def generate_response(self, state: MatchState) -> dict:
@@ -312,11 +324,49 @@ class MatchGraph:
         matches_data = state.get("candidate_matches", [])
         if not matches_data:
             query = state.get("query", "")
-            message = (
+            diag = comp_data.get("_diagnostics", {})
+            my_count = diag.get("my_product_count", 0)
+            vs_count = diag.get("vs_my_company_count", 0)
+            comp_product = comp_data.get("product", {})
+            comp_category = comp_product.get("category", "") if isinstance(comp_product, dict) else ""
+
+            # Build an informative explanation of why no match was found
+            lines = [
                 f"I found the competitor product, but couldn't find a matching "
-                f"{MY_COMPANY_NAME} equivalent in our database.\n\n"
-                f"Please contact your local sales representative:\n{SALES_CONTACT}"
+                f"{MY_COMPANY_NAME} equivalent. Here's why:\n",
+            ]
+            if my_count == 0:
+                lines.append(
+                    f"• **No {MY_COMPANY_NAME} products** have been uploaded to the "
+                    f"database yet. Please ask your administrator to upload {MY_COMPANY_NAME} "
+                    f"catalogues or datasheets first."
+                )
+            elif vs_count == 0:
+                lines.append(
+                    f"• There are {my_count} {MY_COMPANY_NAME} product(s) in the database, "
+                    f"but the search index appears to be empty. The administrator may need to "
+                    f"re-upload or rebuild the product index."
+                )
+            else:
+                lines.append(
+                    f"• There are {my_count} {MY_COMPANY_NAME} product(s) in the database "
+                    f"and {vs_count} indexed for search, but none were close enough to "
+                    f"return as candidates."
+                )
+                if comp_category:
+                    lines.append(
+                        f"• The competitor product's category is **{comp_category}**. "
+                        f"Make sure {MY_COMPANY_NAME} products in the same category have "
+                        f"been uploaded."
+                    )
+                lines.append(
+                    f"• This can happen when the uploaded {MY_COMPANY_NAME} datasheets "
+                    f"cover a different product range or series."
+                )
+            lines.append(
+                f"\nPlease contact your local sales representative for assistance:\n{SALES_CONTACT}"
             )
+            message = "\n".join(lines)
             return {"messages": [AIMessage(content=message)]}
 
         matches = [MatchResult(**m) for m in matches_data]

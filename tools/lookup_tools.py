@@ -120,12 +120,13 @@ class LookupTools:
         top_k: int = 5,
     ) -> list[MatchResult]:
         """Find Danfoss equivalents for a competitor product.
-        Uses semantic search + spec comparison + reranking."""
+        Uses semantic search + spec comparison + reranking.
+        Falls back to category-based DB search if semantic search yields nothing."""
 
         # Build query from competitor product
         query = self.vs._build_indexable_text(competitor)
 
-        # Semantic search in Danfoss collection
+        # Semantic search in Danfoss collection with category
         semantic_results = self.vs.search_my_company(
             query=query,
             category=competitor.category or None,
@@ -142,8 +143,33 @@ class LookupTools:
                 rerank_top_k=10,
             )
 
+        # Fallback: if vector store has no Danfoss products, pull from DB directly
         if not semantic_results:
-            return []
+            db_candidates = []
+            if competitor.category:
+                db_candidates = self.db.get_products_by_category(
+                    competitor.category, company=my_company_name
+                )
+            if not db_candidates:
+                db_candidates = self.db.get_all_products(company=my_company_name)
+
+            # Score each DB candidate directly (no semantic score available)
+            match_results = []
+            for candidate in db_candidates[:50]:
+                confidence, breakdown = self.db.spec_comparison(
+                    competitor, candidate, semantic_score=0.0
+                )
+                match = MatchResult(
+                    my_company_product=candidate,
+                    competitor_product=competitor,
+                    confidence_score=round(confidence, 3),
+                    score_breakdown=breakdown,
+                    meets_threshold=confidence >= CONFIDENCE_THRESHOLD,
+                )
+                match_results.append(match)
+
+            match_results.sort(key=lambda m: m.confidence_score, reverse=True)
+            return match_results[:top_k]
 
         # For each semantic match, compute full spec comparison
         match_results = []

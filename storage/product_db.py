@@ -570,12 +570,34 @@ class ProductDB:
 
     @staticmethod
     def _exact_match(val_a: Optional[str], val_b: Optional[str]) -> float:
-        """Exact string match, case-insensitive. Returns 1.0, 0.0, or 0.5 (unknown)."""
+        """String match, case-insensitive with fuzzy tolerance.
+
+        Returns 1.0 for exact match, 0.75+ for near match (e.g. '24VDC' vs '24 VDC'),
+        0.5 for unknown (one side is None), graded score for partial similarity,
+        or 0.0 for completely different strings.
+        """
         if val_a is None or val_b is None:
             return 0.5  # Unknown
         if not val_a or not val_b:
             return 0.5
-        return 1.0 if val_a.strip().lower() == val_b.strip().lower() else 0.0
+        a = val_a.strip().lower()
+        b = val_b.strip().lower()
+        if a == b:
+            return 1.0
+        # Normalise: strip non-alphanumeric, collapse whitespace
+        import re
+        a_norm = re.sub(r'[^a-z0-9]', '', a)
+        b_norm = re.sub(r'[^a-z0-9]', '', b)
+        if a_norm == b_norm:
+            return 0.95  # e.g. "24 VDC" vs "24VDC", "G 3/8" vs "G3/8"
+        # Containment check — one value contains the other
+        if a_norm in b_norm or b_norm in a_norm:
+            return 0.75
+        # Fuzzy token ratio for everything else
+        ratio = fuzz.token_sort_ratio(a, b) / 100.0
+        if ratio >= 0.8:
+            return ratio
+        return 0.0
 
     @staticmethod
     def _temp_range_match(
