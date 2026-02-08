@@ -79,18 +79,30 @@ SCORE_WEIGHTS (total = 1.0):
   category_match:       0.10  (gate: if 0.0, total capped at 0.3)
   pressure_match:       0.10  (numerical closeness)
   flow_match:           0.10  (numerical closeness)
-  valve_size_match:     0.10  (exact match)
-  coil_voltage_match:   0.10  (exact match - 24VDC != 110VAC)
-  actuator_type_match:  0.08  (exact match)
-  spool_function_match: 0.08  (exact match)
-  mounting_match:       0.08  (exact, falls back to mounting_pattern)
-  port_match:           0.06  (exact match)
-  seal_material_match:  0.03  (exact match)
+  valve_size_match:     0.10  (fuzzy string match)
+  coil_voltage_match:   0.10  (fuzzy string match - "24VDC" ≈ "24 VDC")
+  actuator_type_match:  0.08  (fuzzy string match)
+  spool_function_match: 0.08  (fuzzy string match)
+  mounting_match:       0.08  (fuzzy, falls back to mounting_pattern)
+  port_match:           0.06  (fuzzy string match)
+  seal_material_match:  0.03  (fuzzy string match)
   temp_range_match:     0.02  (range coverage)
   semantic_similarity:  0.15  (from vector search + reranking)
 ```
 
 Missing specs score 0.5 (neutral), not 0.0.
+
+### String Matching (`product_db.py:_exact_match`)
+String comparisons use fuzzy tolerance, not strict equality:
+- **1.0**: exact match (case-insensitive)
+- **0.95**: normalised match after stripping non-alphanumeric chars (e.g. "24VDC" vs "24 VDC", "proportional_solenoid" vs "proportional solenoid")
+- **0.75**: containment (one value inside the other, e.g. "solenoid" in "solenoid operated")
+- **0.8+**: fuzzywuzzy token_sort_ratio for partial similarity
+- **0.5**: one side is None/empty (unknown)
+- **0.0**: completely different strings (e.g. "FKM" vs "NBR")
+
+### Equivalent Search Fallback (`lookup_tools.py:find_my_company_equivalents`)
+If the vector store has no indexed Danfoss products, the search falls back to pulling candidates directly from the SQLite database (by category first, then all Danfoss products) and running spec comparison without a semantic score. This prevents silent empty results when vector indexing hasn't happened.
 
 ### Fuzzy Matching Thresholds (`tools/lookup_tools.py`, `storage/product_db.py`)
 - General lookup: threshold 60%
@@ -108,6 +120,13 @@ Missing specs score 0.5 (neutral), not 0.0.
 ### Numeric Parsing (`parse_tools.py`)
 `_parse_numeric_if_possible()` only converts values that ARE pure numbers (or number+unit like "315 bar"). Preserves mixed alpha-numeric values: "24VDC", "G3/8", "FKM", "ISO 4401-03" are all returned as strings, not corrupted.
 
+### Product Categories (`models.py:ProductCategory`)
+```
+directional_valves, proportional_directional_valves, pressure_valves, flow_valves,
+pumps, motors, cylinders, filters, accumulators, hoses_fittings, other
+```
+Categories must be consistent across: `models.py` enum, `admin_app.py` CATEGORIES, `distributor_app.py` CATEGORIES + CATEGORY_MAP, `graph.py` regex fallback hints, `parse_tools.py` LLM prompts, `prompts.py` query parser prompt.
+
 ### Configurable Values (`graph.py`)
 - `MY_COMPANY_NAME = "Danfoss"` - Company name used in prompts and responses
 - `SALES_CONTACT = "sales@danfoss.com | +44 (0)XXX XXX XXXX"` - Update with real contact number
@@ -117,19 +136,19 @@ Missing specs score 0.5 (neutral), not 0.0.
 ```
 product_matcher/
   app.py                 (~40 lines)  Combined HF Spaces entry point (auth-enabled)
-  distributor_app.py    (~250 lines)  Distributor chat UI (auth, sanitised errors)
-  admin_app.py          (~585 lines)  Admin console UI (auth, gr.State, PDF validation)
-  graph.py              (~650 lines)  LangGraph matching workflow (7 nodes, LLM fallback)
+  distributor_app.py    (~270 lines)  Distributor chat UI (Gradio 5/6 compat, dynamic dropdowns)
+  admin_app.py          (~605 lines)  Admin console UI (interactive tables, auth, gr.State)
+  graph.py              (~650 lines)  LangGraph matching workflow (7 nodes, diagnostics)
   ingest.py             (~240 lines)  PDF ingestion pipeline + ordering code generation
   models.py             (~240 lines)  Pydantic models & constants (incl. OrderingCode*)
   prompts.py            (~100 lines)  LLM system prompts (incl. KB_QA_PROMPT)
   requirements.txt       (32 lines)   Dependencies
   .env                               OPENAI_API_KEY + auth credentials (gitignored)
   storage/
-    product_db.py       (~620 lines)  SQLite CRUD + fuzzy lookup (thread-safe writes)
+    product_db.py       (~630 lines)  SQLite CRUD + fuzzy lookup + fuzzy string matching
     vector_store.py     (~400 lines)  Numpy vector store + reranking (atomic saves)
   tools/
-    lookup_tools.py     (237 lines)   Product identification & matching
+    lookup_tools.py     (~250 lines)  Product identification & matching (with DB fallback)
     parse_tools.py      (~520 lines)  PDF extraction + ordering code combinatorial generation
   data/                              Gitignored runtime data (.db, .npz, .json)
 ```
@@ -148,6 +167,12 @@ Code is compatible with Gradio 5 and 6. `_chatbot_kwargs()` in `distributor_app.
 - `gr.TabbedInterface` doesn't accept `gr.Blocks` - use `gr.Blocks` + `gr.Tabs` + `.render()`
 
 **HF Spaces**: `sdk_version` in README frontmatter must be `6.x` to match the code. Gradio 5 chatbots default to tuple format and will error when receiving message dicts.
+
+### Distributor App Dynamic Dropdowns
+The competitor dropdown in `distributor_app.py` uses `allow_custom_value=True` so distributors can type any competitor name. The choices refresh from the database on every focus event via `refresh_competitor_dropdown()`, so newly uploaded companies appear without restarting.
+
+### Admin Interactive Tables
+All `gr.Dataframe` components in `admin_app.py` are `interactive=True` so cell text can be selected and copied. The data is effectively read-only since handlers always return fresh data on search/refresh.
 
 ### numpy argpartition
 `np.argpartition(-scores, k)` fails when `k >= len(scores)`. Always check bounds first, fallback to `np.argsort`.
@@ -192,12 +217,32 @@ When a PDF contains "Ordering code" / "How to Order" tables:
 ### Field Alias Rescue (`ingest.py`)
 `_FIELD_ALIASES` maps ~60 common LLM/table output names to canonical HydraulicProduct fields (e.g. "pressure" -> "max_pressure_bar", "voltage" -> "coil_voltage"). Applied before product construction to catch non-standard field names.
 
+### No-Match Diagnostics (`graph.py:generate_response`)
+When `find_equivalents` returns no matches, the response includes diagnostic information:
+- How many Danfoss products are in the database
+- How many are indexed in the vector store
+- The competitor product's category (so the admin knows what to upload)
+- Actionable suggestions (upload Danfoss products, re-index, check category coverage)
+
+The diagnostics are gathered in `find_equivalents` and passed via `_diagnostics` in the state dict.
+
+### Adding a New Product Category
+Must be added in **6 places**:
+1. `models.py` — `ProductCategory` enum
+2. `admin_app.py` — `CATEGORIES` list
+3. `distributor_app.py` — `CATEGORIES` list + `CATEGORY_MAP` dict
+4. `graph.py` — `category_hints` dict in `_regex_parse_fallback()`
+5. `tools/parse_tools.py` — LLM prompt category lists (both extraction and ordering code prompts)
+6. `prompts.py` — `QUERY_PARSER_PROMPT` category list
+
 ### Modifying the Matching Pipeline
 - Scoring weights: `SCORE_WEIGHTS` in `models.py`
 - Confidence threshold: `CONFIDENCE_THRESHOLD` in `models.py`
 - Comparison logic: `spec_comparison()` in `storage/product_db.py`
+- String matching tolerance: `_exact_match()` in `storage/product_db.py`
 - Graph routing thresholds: `_route_after_lookup()` in `graph.py`
 - Fuzzy match thresholds: `identify_competitor_product()` in `tools/lookup_tools.py`
+- DB fallback: `find_my_company_equivalents()` in `tools/lookup_tools.py`
 
 ## Dependencies
 

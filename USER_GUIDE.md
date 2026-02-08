@@ -123,7 +123,7 @@ The left side contains the upload form, and the right side shows the results.
    - **datasheet** - Individual product datasheets with detailed specifications. Like user guides, these also trigger ordering code generation and pattern extraction. Best for single product series with full ordering code tables.
 
 4. **Select the Product Category** (optional)
-   Choose from: Directional Valves, Pressure Valves, Flow Valves, Pumps, Motors, Cylinders, Filters, Accumulators, Hoses & Fittings, or Other.
+   Choose from: Directional Valves, Proportional Directional Valves, Pressure Valves, Flow Valves, Pumps, Motors, Cylinders, Filters, Accumulators, Hoses & Fittings, or Other.
    - Select **All / Auto-detect** if the PDF covers multiple categories or you want the system to determine the category automatically.
    - Selecting a specific category helps the extraction accuracy, especially for large catalogues with mixed content.
 
@@ -378,8 +378,8 @@ At the bottom of the page, several example searches are provided. Click any of t
 
 Below the search box, two optional dropdown filters help narrow results:
 
-- **Category** - Limits the search to a specific product type (Directional Valves, Pressure Valves, Flow Valves, Pumps, Motors, Cylinders, Filters, Accumulators, Hoses & Fittings)
-- **Competitor** - Limits the search to a specific competitor brand (populated from the database)
+- **Category** - Limits the search to a specific product type (Directional Valves, Proportional Directional Valves, Pressure Valves, Flow Valves, Pumps, Motors, Cylinders, Filters, Accumulators, Hoses & Fittings)
+- **Competitor** - Limits the search to a specific competitor brand. The dropdown is populated from the database and refreshes automatically when new companies are uploaded. You can also type any competitor name directly — even if it is not yet in the list.
 
 Leave both set to "All" for the broadest search.
 
@@ -412,6 +412,13 @@ If the product cannot be found at all:
 - Suggestions to check spelling or try a shorter code
 - Your sales representative's contact details
 
+**5. Competitor Found but No Equivalent**
+If the competitor product is identified but no equivalent exists in the database:
+- An explanation of **why** no match was found (e.g. no Danfoss products uploaded, search index empty, no products in the same category)
+- The number of Danfoss products in the database and search index
+- Guidance for what the administrator needs to upload
+- Your sales representative's contact details
+
 ### Giving Feedback
 
 After receiving a result, click:
@@ -436,13 +443,13 @@ The confidence score (0-100%) represents how closely a candidate product matches
 | Category Match | 10% | Gate | Same product category (if mismatched, total capped at 30%) |
 | Max Pressure | 10% | Numerical | How close the pressure ratings are |
 | Max Flow | 10% | Numerical | How close the flow ratings are |
-| Valve Size | 10% | Exact | CETOP/NG size must match exactly |
-| Coil Voltage | 10% | Exact | 24VDC, 110VAC, etc. must match exactly |
-| Spool Function | 8% | Exact | Valve spool type/function code |
-| Actuator Type | 8% | Exact | Solenoid vs pilot vs manual |
-| Mounting | 8% | Exact | Mounting pattern (e.g. ISO 4401-05) |
-| Port Size | 6% | Exact | Port size and thread type |
-| Seal Material | 3% | Exact | NBR, FKM/Viton, etc. |
+| Valve Size | 10% | Fuzzy | CETOP/NG size (tolerates formatting differences like "CETOP 5" vs "CETOP 05") |
+| Coil Voltage | 10% | Fuzzy | "24VDC" matches "24 VDC"; "110VAC" matches "110 VAC" |
+| Spool Function | 8% | Fuzzy | Valve spool type/function code |
+| Actuator Type | 8% | Fuzzy | "proportional_solenoid" matches "proportional solenoid" |
+| Mounting | 8% | Fuzzy | Mounting pattern (e.g. "ISO 4401-05" matches "ISO4401-05") |
+| Port Size | 6% | Fuzzy | Port size and thread type |
+| Seal Material | 3% | Fuzzy | NBR, FKM/Viton, etc. (different materials score 0.0) |
 | Temp Range | 2% | Range | Does the candidate cover the operating temperature range? |
 
 **Important rules:**
@@ -475,7 +482,7 @@ This order ensures the richest possible product data for accurate matching. Data
 **Naming Conventions:**
 - Use consistent company names when uploading (e.g. always "Bosch Rexroth", not sometimes "Bosch" and sometimes "Rexroth")
 - If you must use variations, set up synonyms in the Settings tab
-- Categories should match the predefined list (directional_valves, pressure_valves, flow_valves, pumps, motors, cylinders, filters, accumulators, hoses_fittings, other)
+- Categories should match the predefined list (directional_valves, proportional_directional_valves, pressure_valves, flow_valves, pumps, motors, cylinders, filters, accumulators, hoses_fittings, other)
 
 ### For Distributors
 
@@ -502,11 +509,13 @@ This order ensures the richest possible product data for accurate matching. Data
 - Check the terminal/server logs for detailed error messages (the web UI shows sanitised errors for security)
 - If you see "API configuration error", your OpenAI API key is missing or invalid
 
-**Search returns no results**
-- Verify products exist in the database (check the Product Database tab)
+**Search returns no results or "couldn't find a matching equivalent"**
+- The system now explains why no match was found (no Danfoss products, empty index, or category mismatch) — read the response carefully for guidance
+- Verify Danfoss products exist in the database (check the Product Database tab)
 - Try a shorter or more general search term
 - Check if the vector store has been indexed (see the Settings tab for collection counts)
 - Try the "Re-index Vector Store" button on the Product Database tab
+- You can select and copy any text from the admin tables for diagnostic purposes
 
 **Incorrect matches being returned**
 - Create a confirmed equivalent in the Feedback Review tab to override the algorithmic match
