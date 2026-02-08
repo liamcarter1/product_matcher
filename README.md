@@ -17,7 +17,9 @@ A RAG-powered application for cross-referencing competitor hydraulic products ag
 ## Features
 
 - **Distributor Product Finder** - Chat interface where distributors enter a competitor model code and get the best equivalent with a confidence score
+- **Knowledge Base Q&A** - Distributors can ask general questions about products and get answers grounded in uploaded documentation
 - **Admin Console** - Upload PDF catalogues and user guides, manage products, review feedback
+- **Ordering Code Generation** - Automatically reads "How to Order" tables from datasheets and generates ALL product variants as separate database entries with fully populated specs
 - **Smart Matching** - 12-dimension weighted scoring across pressure, flow, coil voltage, mounting, spool type, and more
 - **Fuzzy Model Code Lookup** - Partial codes accepted (e.g. "4WE6" finds "4WE6D6X/EG24N9K4")
 - **75% Confidence Threshold** - Below threshold directs distributors to contact their sales representative
@@ -73,7 +75,8 @@ See `CLAUDE.md` for the full list of host/port configuration variables.
 
 ## Architecture
 
-- **LangGraph** StateGraph with MemorySaver for conversation persistence
+- **LangGraph** StateGraph (7 nodes) with MemorySaver for conversation persistence
+- **Ordering code combinatorial engine** - Parses "How to Order" tables via GPT-4o-mini, generates all product variants via `itertools.product()` (capped at 500)
 - **Numpy-based vector store** with sentence-transformers embeddings + cross-encoder reranking
 - **SQLite** for structured product data, model code patterns, confirmed equivalents, and feedback
 - **Gradio** for both the distributor and admin interfaces

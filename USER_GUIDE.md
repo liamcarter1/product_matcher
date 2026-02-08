@@ -118,9 +118,9 @@ The left side contains the upload form, and the right side shows the results.
 
 3. **Select the Document Type**
    Choose from:
-   - **catalogue** - Product catalogues with model codes, spec tables, and product listings. This is the most common choice. The system will try to extract product tables using pdfplumber first, then fall back to LLM extraction if tables cannot be parsed.
-   - **user_guide** - User/installation guides that contain "How to Order" pages and model code breakdowns. These are especially valuable because the system will also extract **model code decode patterns** (see below).
-   - **datasheet** - Individual product datasheets with detailed specifications. Like user guides, these also trigger model code pattern extraction.
+   - **catalogue** - Product catalogues with model codes, spec tables, and product listings. This is the most common choice. The system will try to extract product tables using pdfplumber first, then fall back to LLM extraction if tables cannot be parsed. If ordering code tables are found, all variants are generated automatically.
+   - **user_guide** - User/installation guides that contain "How to Order" pages and model code breakdowns. These are especially valuable because the system will extract **ordering code breakdown tables** and generate all product variants, plus store model code decode patterns for future use.
+   - **datasheet** - Individual product datasheets with detailed specifications. Like user guides, these also trigger ordering code generation and pattern extraction. Best for single product series with full ordering code tables.
 
 4. **Select the Product Category** (optional)
    Choose from: Directional Valves, Pressure Valves, Flow Valves, Pumps, Motors, Cylinders, Filters, Accumulators, Hoses & Fittings, or Other.
@@ -130,16 +130,19 @@ The left side contains the upload form, and the right side shows the results.
 5. **Click "Upload & Process"**
    The system will:
    - Parse the PDF using pdfplumber (for tables) and pypdf (for text)
-   - If tables are found, map the table columns to product fields (model code, pressure, flow, voltage, etc.)
-   - If no tables are found, send the text to GPT-4o-mini for structured product extraction
-   - For user guides/datasheets: extract model code decode patterns
+   - If tables are found, map the table columns to product fields using ~90 header patterns (model code, pressure, flow, voltage, seal material, etc.)
+   - If no tables are found, send the text to GPT-4o-mini for structured product extraction (31 spec fields)
+   - **Ordering code generation:** Detect "Ordering code" / "How to Order" breakdown tables and generate ALL product variants by combining variable segments (e.g. 4 flow rates x 2 seals x 2 interfaces = 16 products)
+   - For user guides/datasheets: extract model code decode patterns for future use
    - Index the full text as searchable guide chunks (1000-character chunks with 200-character overlap)
+   - Deduplicate products from all sources, keeping the variant with the most populated specs
 
    The Status field will show a message like:
-   > Extracted 47 products from 1 file(s). Also indexed 83 text chunks.
+   > Extracted 83 products from 1 file(s). Also indexed 83 text chunks.
+   > Sources: 15 from table extraction, 68 generated from ordering code table(s).
    >
    > File results:
-   >   Bosch_Rexroth_4WE_Catalogue.pdf: 47 products, 83 text chunks
+   >   Bosch_Rexroth_4WRE_Datasheet.pdf: 83 products, 83 text chunks
    >
    > Review the products below and click 'Confirm & Index' to add them to the database.
 
@@ -147,13 +150,14 @@ The left side contains the upload form, and the right side shows the results.
 
 6. **Review the Extracted Products**
    The table shows each extracted product with:
-   - **Model Code** - The product's model number
+   - **Source** - Where the product came from: `table` (PDF table extraction), `llm` (LLM text extraction), or `ordering_code` (generated from ordering code breakdown table)
+   - **Model Code** - The product's model number (for ordering code products, this is the fully assembled code e.g. `4WREE6E16-3XV/24A1`)
    - **Product Name** - Human-readable name
    - **Category** - Detected or assigned category
    - **Confidence** - How confident the extraction was (extraction confidence, not matching confidence)
-   - **Key specs** - max_pressure_bar, max_flow_lpm, coil_voltage, valve_size, actuator_type, port_size, mounting
+   - **Key specs** - max_pressure_bar, max_flow_lpm, coil_voltage, valve_size, seal_material, actuator_type, port_size, mounting, num_ports
 
-   **Check the results carefully.** If the PDF was poorly formatted or the extraction missed products, you may want to try uploading again with a different Document Type setting.
+   **Check the results carefully.** If the PDF was poorly formatted or the extraction missed products, you may want to try uploading again with a different Document Type setting. For ordering code products, scroll through to verify the generated combinations look correct.
 
 7. **Click "Confirm & Index"**
    This saves all extracted products to:
@@ -163,31 +167,35 @@ The left side contains the upload form, and the right side shows the results.
    You will see a confirmation message:
    > "Successfully indexed 47 products into the database and vector store."
 
-#### What Happens with User Guides (Model Code Patterns)
+#### What Happens with Ordering Code Tables (Combinatorial Generation)
 
-This is one of the most powerful features of the system. When you upload a **user_guide** or **datasheet**, the system looks for "How to Order" or "Model Code Breakdown" pages.
+This is the most powerful feature of the system. When you upload any PDF, the system looks for "Ordering code" / "How to Order" breakdown tables.
 
-For example, a Bosch Rexroth user guide might show:
+For example, a Bosch Rexroth datasheet might show an ordering code table like:
 
 ```
-4WE  6  D6X  /  EG24  N9  K4
-|    |   |       |     |   +-- Design/seal variant (K4 = specific seal/spring)
-|    |   |       |     +------ Return spring configuration
-|    |   |       +------------- Coil voltage (EG24 = 24VDC)
-|    |   +---------------------- Spool type (D6X = specific function)
-|    +-------------------------- Valve size (6 = NG6 / CETOP 3)
-+------------------------------- Series name (4WE = 4-way directional)
+Position 01: "4"   (fixed)    - 4 main ports
+Position 02: "WRE" (fixed)    - Proportional directional valve
+Position 03: "E"   (fixed)    - With integrated electronics
+Position 04: "6"   (fixed)    - Size 6
+Position 06: flow rate (variable) - 04 (4 l/min), 08 (8 l/min), 16 (16 l/min), 32 (32 l/min)
+Position 09: seal (variable)  - V (FKM), M (NBR)
+Position 10: "24"  (fixed)    - 24V supply voltage
+Position 11: interface (variable) - A1 (command ±10V), F1 (command 4-20mA)
+Position 12: special (variable)   - (none), -967 (with pressure compensation)
 ```
 
-The system uses GPT-4o-mini to parse these breakdown tables and stores the decode rules in a `model_code_patterns` table. This means that when a distributor later searches for "4WE6D6X/EG24N9K4", the system can automatically decode:
-- EG24 = 24VDC coil voltage
-- D6X = specific spool function
-- 6 = NG6 / CETOP 3 valve size
-- 4WE = 4-way directional valve
+The system uses GPT-4o-mini to parse these tables, then **generates ALL valid combinations** as separate product entries. In this example: 4 flow rates x 2 seals x 2 interfaces x 2 specials = **32 unique products**, each with:
+- A fully assembled model code (e.g. `4WREE6E16-3XV/24A1`)
+- All spec fields populated from the segment mappings (e.g. `max_flow_lpm=16, seal_material=FKM, coil_voltage=24VDC`)
 
-These decoded specs are then compared field-by-field against your products to generate an accurate confidence score.
+This means that when a distributor later searches for any specific variant like "4WREE6E32-3XM/24F1", the system has that exact product in the database with all its specs, enabling accurate field-by-field comparison.
 
-**Tip:** Upload user guides BEFORE catalogues for each competitor. This populates the decode patterns first, so when you then upload the catalogue, the system can automatically enrich extracted products with decoded specs.
+The system also stores model code decode patterns in the `model_code_patterns` table for future use, so even products that were extracted from a simple table row can have their specs enriched by decoding their model code.
+
+**Generation is capped at 500 products per ordering code table** to prevent combinatorial explosion. If the cap is hit, the admin is warned in the status message.
+
+**Tip:** Upload datasheets and user guides (which contain ordering code tables) BEFORE plain catalogues. This both generates the richest product data and populates decode patterns for future enrichment.
 
 #### Common Upload Scenarios
 
@@ -195,9 +203,10 @@ These decoded specs are then compared field-by-field against your products to ge
 |----------|--------------|----------|-------|
 | Competitor's full product catalogue | catalogue | All / Auto-detect | Covers multiple product types |
 | Competitor's valve-specific catalogue | catalogue | Directional Valves | Narrower = better extraction |
-| Competitor's "How to Order" guide | user_guide | All / Auto-detect | Extracts decode patterns |
-| Single product datasheet | datasheet | (select specific) | Best for one product at a time |
+| Competitor's "How to Order" guide | user_guide | All / Auto-detect | Generates all ordering code variants + decode patterns |
+| Single product datasheet | datasheet | (select specific) | Best for one product — generates ordering code variants if table found |
 | Your own Danfoss catalogue | catalogue | (select specific) | Use "Danfoss" as company name |
+| Your own Danfoss datasheet | datasheet | (select specific) | Use "Danfoss" — generates all your product variants for matching |
 
 #### If the Extraction Fails
 
@@ -449,12 +458,12 @@ The confidence score (0-100%) represents how closely a candidate product matches
 ### For Admin Staff
 
 **Building the Database:**
-1. Start by uploading your own company's user guides first - this populates model code patterns for your products
-2. Then upload your own catalogues - these get enriched by the decode patterns
-3. Next, upload competitor user guides (for their model code decode patterns)
-4. Finally, upload competitor catalogues
+1. Start by uploading your own company's datasheets and user guides first - these contain ordering code tables that generate all your product variants with full specs
+2. Then upload your own catalogues - these add any products not covered by the datasheets
+3. Next, upload competitor datasheets and user guides (generates their product variants + decode patterns)
+4. Finally, upload competitor catalogues for any remaining products
 
-This order ensures the richest possible product data for accurate matching.
+This order ensures the richest possible product data for accurate matching. Datasheets with ordering code tables produce the best results because every product variant gets its own database entry with fully populated specs.
 
 **Maintaining Accuracy:**
 - Check the Feedback Review tab regularly for thumbs-down feedback

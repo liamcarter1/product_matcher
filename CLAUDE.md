@@ -22,7 +22,13 @@ python distributor_app.py   # or python app.py for combined
 
 ### Data Flow
 ```
-PDF Upload (admin) -> Parse & Extract -> Review -> Store (SQLite + Vector Store)
+PDF Upload (admin) -> Parse & Extract -> Ordering Code Generation -> Dedup -> Review -> Store
+                              |                    |
+                     Table extraction       Combinatorial generation
+                     LLM text extraction    from ordering code tables
+                     Header mapping         (all segment permutations)
+                                                          |
+                                            SQLite + Vector Store
                                                           |
 Distributor Query -> Fuzzy Code Lookup -> Identify Competitor Product
                                                           |
@@ -32,14 +38,15 @@ Distributor Query -> Fuzzy Code Lookup -> Identify Competitor Product
 ```
 
 ### LangGraph Workflow (graph.py)
-5 nodes in a StateGraph with MemorySaver:
+7 nodes in a StateGraph with MemorySaver:
 ```
-START -> parse_query -> lookup_competitor -> [routing]
-  routing:
-    "confirmed"  -> generate_response -> END  (skip matching, use manual override)
-    "found"      -> find_equivalents -> generate_response -> END
-    "ambiguous"  -> clarify -> END  (ask user to pick)
-    "not_found"  -> generate_response -> END  (show "not found" message)
+START -> parse_query -> [routing by intent]
+  intent="info"      -> retrieve_kb_context -> generate_kb_answer -> END  (KB Q&A path)
+  intent="match"     -> lookup_competitor -> [routing by lookup result]
+    "confirmed"      -> generate_response -> END  (manual override)
+    "found"          -> find_equivalents -> generate_response -> END
+    "ambiguous"      -> clarify -> END  (ask user to pick)
+    "not_found"      -> generate_response -> END  (show "not found" message)
 ```
 
 LLM: `ChatOpenAI(model="gpt-4o-mini", temperature=0.1)`
@@ -98,6 +105,9 @@ Missing specs score 0.5 (neutral), not 0.0.
 ### Text Chunking (`ingest.py`)
 - RecursiveCharacterTextSplitter: chunk_size=1000, overlap=200
 
+### Numeric Parsing (`parse_tools.py`)
+`_parse_numeric_if_possible()` only converts values that ARE pure numbers (or number+unit like "315 bar"). Preserves mixed alpha-numeric values: "24VDC", "G3/8", "FKM", "ISO 4401-03" are all returned as strings, not corrupted.
+
 ### Configurable Values (`graph.py`)
 - `MY_COMPANY_NAME = "Danfoss"` - Company name used in prompts and responses
 - `SALES_CONTACT = "sales@danfoss.com | +44 (0)XXX XXX XXXX"` - Update with real contact number
@@ -107,20 +117,20 @@ Missing specs score 0.5 (neutral), not 0.0.
 ```
 product_matcher/
   app.py                 (~40 lines)  Combined HF Spaces entry point (auth-enabled)
-  distributor_app.py    (~245 lines)  Distributor chat UI (auth, sanitised errors)
-  admin_app.py          (~480 lines)  Admin console UI (auth, gr.State, PDF validation)
-  graph.py              (~510 lines)  LangGraph matching workflow (LLM fallback)
-  ingest.py             (220 lines)   PDF ingestion pipeline
-  models.py             (211 lines)   Pydantic models & constants
-  prompts.py             (69 lines)   LLM system prompts
+  distributor_app.py    (~250 lines)  Distributor chat UI (auth, sanitised errors)
+  admin_app.py          (~585 lines)  Admin console UI (auth, gr.State, PDF validation)
+  graph.py              (~650 lines)  LangGraph matching workflow (7 nodes, LLM fallback)
+  ingest.py             (~240 lines)  PDF ingestion pipeline + ordering code generation
+  models.py             (~240 lines)  Pydantic models & constants (incl. OrderingCode*)
+  prompts.py            (~100 lines)  LLM system prompts (incl. KB_QA_PROMPT)
   requirements.txt       (32 lines)   Dependencies
   .env                               OPENAI_API_KEY + auth credentials (gitignored)
   storage/
     product_db.py       (~620 lines)  SQLite CRUD + fuzzy lookup (thread-safe writes)
-    vector_store.py     (~380 lines)  Numpy vector store + reranking (atomic saves)
+    vector_store.py     (~400 lines)  Numpy vector store + reranking (atomic saves)
   tools/
     lookup_tools.py     (237 lines)   Product identification & matching
-    parse_tools.py      (279 lines)   PDF table/text extraction + LLM extraction
+    parse_tools.py      (~520 lines)  PDF extraction + ordering code combinatorial generation
   data/                              Gitignored runtime data (.db, .npz, .json)
 ```
 
@@ -161,10 +171,24 @@ ChromaDB is incompatible (pydantic v1). The vector store uses numpy instead. The
 
 ### Adding a New Competitor
 Upload their catalogue/user guide PDF via the admin console. The pipeline:
-1. pdfplumber extracts tables -> maps headers to product fields
-2. pypdf extracts text -> GPT-4o-mini structures products (fallback)
-3. For user guides: GPT-4o-mini extracts model code decode patterns
-4. Admin reviews extracted products, then confirms to index
+1. pdfplumber extracts tables -> maps ~90 header patterns to product fields
+2. pypdf extracts text -> GPT-4o-mini structures products (31 spec fields, fallback)
+3. GPT-4o-mini extracts ordering code breakdown tables -> combinatorial generator creates all product variants (capped at 500)
+4. For user guides/datasheets: GPT-4o-mini also extracts model code decode patterns
+5. Deduplication merges products from all sources (keeps richest specs)
+6. Admin reviews extracted products (with Source column: table/llm/ordering_code), then confirms to index
+
+### Ordering Code Combinatorial Generation (`parse_tools.py`)
+When a PDF contains "Ordering code" / "How to Order" tables:
+- `extract_ordering_code_with_llm()` identifies segment positions, fixed/variable flags, separators, and field mappings
+- `generate_products_from_ordering_code()` creates all permutations via `itertools.product()`
+- `assemble_model_code()` reconstructs model codes from a template like `{01}{02}{03}-{04}/{05}`
+- Empty "no code" options handled (double separators cleaned up)
+- `MAX_COMBINATIONS = 500` safety cap
+- Data models: `OrderingCodeSegment`, `OrderingCodeDefinition` in `models.py`
+
+### Field Alias Rescue (`ingest.py`)
+`_FIELD_ALIASES` maps ~60 common LLM/table output names to canonical HydraulicProduct fields (e.g. "pressure" -> "max_pressure_bar", "voltage" -> "coil_voltage"). Applied before product construction to catch non-standard field names.
 
 ### Modifying the Matching Pipeline
 - Scoring weights: `SCORE_WEIGHTS` in `models.py`
