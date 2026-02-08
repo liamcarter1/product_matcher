@@ -140,12 +140,14 @@ product_matcher/
 `process.extract()` returns `(match, score)` tuples (2-element), NOT `(match, score, index)`. Always use `match_tuple[0]`, `match_tuple[1]` - never 3-element destructuring.
 
 ### Gradio Version
-Code is compatible with Gradio 5 and 6. Key changes in Gradio 6:
+Code is compatible with Gradio 5 and 6. `_chatbot_kwargs()` in `distributor_app.py` auto-detects the version and adds `type="messages"` for Gradio 5 (where the default is tuple format). Key changes in Gradio 6:
 - `theme` and `css` moved from `gr.Blocks()` to `.launch()`
 - `gr.Chatbot(type="messages")` removed - messages format is default
 - `gr.Chatbot(show_copy_button=True)` removed
 - `gr.update()` removed - return component instances directly (e.g. `gr.Dropdown(choices=[...])`)
 - `gr.TabbedInterface` doesn't accept `gr.Blocks` - use `gr.Blocks` + `gr.Tabs` + `.render()`
+
+**HF Spaces**: `sdk_version` in README frontmatter must be `6.x` to match the code. Gradio 5 chatbots default to tuple format and will error when receiving message dicts.
 
 ### numpy argpartition
 `np.argpartition(-scores, k)` fails when `k >= len(scores)`. Always check bounds first, fallback to `np.argsort`.

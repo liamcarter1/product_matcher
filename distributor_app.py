@@ -20,6 +20,17 @@ load_dotenv(override=True)
 
 logger = logging.getLogger(__name__)
 
+# Gradio 5 vs 6 compatibility: Gradio 5 chatbots default to tuple format
+# and need type="messages" explicitly. Gradio 6 removed the parameter.
+_GRADIO_MAJOR = int(gr.__version__.split(".")[0])
+
+def _chatbot_kwargs(**extra) -> dict:
+    """Return keyword arguments for gr.Chatbot that work across Gradio 5 & 6."""
+    kwargs = dict(extra)
+    if _GRADIO_MAJOR < 6:
+        kwargs["type"] = "messages"
+    return kwargs
+
 # ── Initialise ────────────────────────────────────────────────────────
 
 db = ProductDB()
@@ -104,9 +115,18 @@ def get_suggestions(partial):
 
 
 def get_company_choices():
+    """Fetch current competitor companies from the database (called on every focus)."""
     companies = db.get_companies()
     non_my = [c for c in companies if c.lower() not in ("danfoss",)]
     return ["All"] + non_my
+
+
+def refresh_competitor_dropdown(current_value):
+    """Return an updated Dropdown with the latest companies, preserving the selection."""
+    choices = get_company_choices()
+    # Keep the user's current selection if it's still valid (or a custom value)
+    value = current_value if current_value in choices or current_value else "All"
+    return gr.Dropdown(choices=choices, value=value)
 
 
 def new_session():
@@ -149,8 +169,7 @@ with gr.Blocks(title="Danfoss Product Finder") as distributor_ui:
 
     # Chat area
     chatbot = gr.Chatbot(
-        label="Product Search",
-        height=450,
+        **_chatbot_kwargs(label="Product Search", height=450),
     )
 
     # Input area
@@ -175,6 +194,7 @@ with gr.Blocks(title="Danfoss Product Finder") as distributor_ui:
                 label="Competitor (optional)",
                 choices=get_company_choices(),
                 value="All",
+                allow_custom_value=True,
                 scale=1,
             )
 
@@ -235,6 +255,13 @@ with gr.Blocks(title="Danfoss Product Finder") as distributor_ui:
     new_session_btn.click(
         new_session,
         outputs=[chatbot, thread_id],
+    )
+
+    # Refresh competitor dropdown whenever it gains focus (picks up new uploads)
+    competitor_filter.focus(
+        refresh_competitor_dropdown,
+        inputs=[competitor_filter],
+        outputs=[competitor_filter],
     )
 
 
