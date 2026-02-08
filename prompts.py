@@ -15,7 +15,7 @@ They may provide:
 Analyze the user's query and extract:
 1. model_code: any model code or partial code mentioned (string or null)
 2. competitor_name: competitor brand if mentioned (string or null)
-3. category: product category if determinable (string or null)
+3. category: product category if determinable — one of: directional_valves, proportional_directional_valves, pressure_valves, flow_valves, pumps, motors, cylinders, filters, accumulators, hoses_fittings, other (string or null)
 4. specs: any specific specs mentioned like voltage, pressure, flow (dict)
 5. is_followup: whether this is a follow-up to a previous result (boolean)
 6. intent: "lookup" (find equivalent), "compare" (compare two products), "clarify" (answering a clarification question), or "info" (general question)

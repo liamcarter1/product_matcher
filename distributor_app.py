@@ -138,7 +138,8 @@ def new_session():
 
 CATEGORIES = [
     "All",
-    "Directional Valves", "Pressure Valves", "Flow Valves",
+    "Directional Valves", "Proportional Directional Valves",
+    "Pressure Valves", "Flow Valves",
     "Pumps", "Motors", "Cylinders",
     "Filters", "Accumulators", "Hoses & Fittings",
 ]
@@ -146,6 +147,7 @@ CATEGORIES = [
 CATEGORY_MAP = {
     "All": "",
     "Directional Valves": "directional_valves",
+    "Proportional Directional Valves": "proportional_directional_valves",
     "Pressure Valves": "pressure_valves",
     "Flow Valves": "flow_valves",
     "Pumps": "pumps",

@@ -217,8 +217,8 @@ def extract_products_with_llm(
 Extract ALL products mentioned in the following text. For each product, extract:
 - model_code: the full model/part number
 - product_name: what the product is (e.g. "Directional Control Valve")
-- category: one of: directional_valves, pressure_valves, flow_valves, pumps, motors, cylinders, filters, accumulators, hoses_fittings, other
-- subcategory: more specific type (e.g. "proportional_valve", "check_valve", "vane_pump")
+- category: one of: directional_valves, proportional_directional_valves, pressure_valves, flow_valves, pumps, motors, cylinders, filters, accumulators, hoses_fittings, other
+- subcategory: more specific type (e.g. "check_valve", "vane_pump", "servo_valve")
 - max_pressure_bar: maximum operating pressure in bar (number only)
 - max_flow_lpm: maximum flow rate in litres per minute (number only)
 - valve_size: e.g. "CETOP 3", "CETOP 5", "NG6", "NG10"
@@ -411,7 +411,7 @@ For the text below, extract ALL ordering code breakdown tables for company: {com
 For EACH ordering code table, return:
 1. "series": the base series identifier (e.g. "4WRE", "D1VW")
 2. "product_name": what the product is (e.g. "Proportional directional valve")
-3. "category": one of: directional_valves, pressure_valves, flow_valves, pumps, motors, cylinders, filters, accumulators, hoses_fittings, other
+3. "category": one of: directional_valves, proportional_directional_valves, pressure_valves, flow_valves, pumps, motors, cylinders, filters, accumulators, hoses_fittings, other
 4. "code_template": a template showing how to assemble the model code, using {{01}}, {{02}}, etc. for each position.
    Include separators exactly as they appear (dashes "-", slashes "/", dots ".").
    Example: "{{01}}{{02}}{{03}}{{04}}{{05}}{{06}}{{07}}-{{08}}{{09}}/{{10}}{{11}}{{12}}"

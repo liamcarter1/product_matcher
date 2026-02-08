@@ -416,7 +416,8 @@ def get_company_list():
 
 CATEGORIES = [
     "All / Auto-detect",
-    "directional_valves", "pressure_valves", "flow_valves",
+    "directional_valves", "proportional_directional_valves",
+    "pressure_valves", "flow_valves",
     "pumps", "motors", "cylinders",
     "filters", "accumulators", "hoses_fittings", "other",
 ]

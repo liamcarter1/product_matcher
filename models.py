@@ -10,6 +10,7 @@ from enum import Enum
 
 class ProductCategory(str, Enum):
     DIRECTIONAL_VALVES = "directional_valves"
+    PROPORTIONAL_DIRECTIONAL_VALVES = "proportional_directional_valves"
     PRESSURE_VALVES = "pressure_valves"
     FLOW_VALVES = "flow_valves"
     PUMPS = "pumps"

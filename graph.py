@@ -155,8 +155,10 @@ class MatchGraph:
                 competitor_name = brand.title()
                 break
 
-        # Extract category hints
+        # Extract category hints (most specific first)
         category_hints = {
+            "proportional directional": "proportional_directional_valves",
+            "proportional valve": "proportional_directional_valves",
             "directional": "directional_valves",
             "pressure": "pressure_valves",
             "flow": "flow_valves",
