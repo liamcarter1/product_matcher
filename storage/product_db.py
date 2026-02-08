@@ -341,6 +341,9 @@ class ProductDB:
                 if segment_val == pattern["code_value"].upper():
                     decoded[pattern["segment_name"]] = pattern["decoded_value"]
                     decoded[f"_raw_{pattern['segment_name']}"] = segment_val
+                    # Store the explicit field mapping for _apply_decoded_specs
+                    if pattern.get("maps_to_field"):
+                        decoded[f"_field_{pattern['segment_name']}"] = pattern["maps_to_field"]
 
         return decoded
 

@@ -18,9 +18,77 @@ from tools.parse_tools import (
     table_rows_to_products,
     extract_products_with_llm,
     extract_model_code_patterns_with_llm,
+    extract_ordering_code_with_llm,
+    generate_products_from_ordering_code,
 )
 from storage.product_db import ProductDB
 from storage.vector_store import VectorStore
+
+# Numeric fields that need float conversion in _apply_decoded_specs
+_FLOAT_FIELDS = {
+    "max_pressure_bar", "max_flow_lpm", "weight_kg",
+    "operating_temp_min_c", "operating_temp_max_c",
+    "displacement_cc", "speed_rpm_max",
+    "bore_diameter_mm", "rod_diameter_mm", "stroke_mm",
+}
+
+# Integer fields that need int conversion in _apply_decoded_specs
+_INT_FIELDS = {"num_positions", "num_ports"}
+
+# All valid HydraulicProduct spec fields for _apply_decoded_specs
+_ALL_SPEC_FIELDS = {
+    "coil_voltage", "valve_size", "spool_type", "actuator_type",
+    "port_size", "port_type", "mounting", "mounting_pattern",
+    "seal_material", "body_material", "coil_type", "coil_connector",
+    "subcategory", "fluid_type", "viscosity_range_cst",
+} | _FLOAT_FIELDS | _INT_FIELDS
+
+# Field aliases: map common LLM/table output names to canonical HydraulicProduct field names
+_FIELD_ALIASES = {
+    # Pressure variations
+    "pressure": "max_pressure_bar", "pressure_bar": "max_pressure_bar",
+    "max_pressure": "max_pressure_bar", "rated_pressure": "max_pressure_bar",
+    "operating_pressure": "max_pressure_bar",
+    # Flow variations
+    "flow": "max_flow_lpm", "flow_rate": "max_flow_lpm",
+    "max_flow": "max_flow_lpm", "rated_flow": "max_flow_lpm",
+    "flow_lpm": "max_flow_lpm",
+    # Voltage variations
+    "voltage": "coil_voltage", "supply_voltage": "coil_voltage",
+    "solenoid_voltage": "coil_voltage",
+    # Size variations
+    "size": "valve_size", "nominal_size": "valve_size",
+    "cetop": "valve_size", "ng_size": "valve_size",
+    # Port variations
+    "port": "port_size", "connection": "port_size",
+    "connection_size": "port_size", "thread": "port_type",
+    # Mounting variations
+    "mounting_type": "mounting", "interface": "mounting_pattern",
+    # Material variations
+    "seal": "seal_material", "seals": "seal_material",
+    "material": "body_material",
+    # Cylinder dimensions
+    "bore": "bore_diameter_mm", "rod": "rod_diameter_mm",
+    "stroke": "stroke_mm", "stroke_length": "stroke_mm",
+    # Pump/motor specs
+    "displacement": "displacement_cc", "speed": "speed_rpm_max",
+    "max_speed": "speed_rpm_max", "rpm": "speed_rpm_max",
+    # Positions/ports
+    "positions": "num_positions", "ways": "num_positions",
+    "ports": "num_ports", "number_of_ports": "num_ports",
+    # Temperature
+    "temp_min": "operating_temp_min_c", "temp_max": "operating_temp_max_c",
+    "min_temp": "operating_temp_min_c", "max_temp": "operating_temp_max_c",
+    # Actuation
+    "actuation": "actuator_type", "operation": "actuator_type",
+    # Other
+    "weight": "weight_kg", "mass": "weight_kg",
+    "fluid": "fluid_type", "medium": "fluid_type",
+    "viscosity": "viscosity_range_cst",
+    "spool": "spool_type", "function": "spool_type",
+    "connector": "coil_connector",
+    "product_type": "subcategory", "valve_type": "subcategory",
+}
 
 text_splitter = RecursiveCharacterTextSplitter(
     chunk_size=1000,
@@ -58,7 +126,7 @@ class IngestionPipeline:
             llm_products = extract_products_with_llm(full_text, metadata)
             extracted_products.extend(llm_products)
 
-        # Step 4: Extract model code patterns (from user guides)
+        # Step 4: Extract model code patterns (from user guides/datasheets)
         if metadata.document_type in (DocumentType.USER_GUIDE, DocumentType.DATASHEET):
             patterns = extract_model_code_patterns_with_llm(full_text, metadata.company)
             for pattern_data in patterns:
@@ -77,12 +145,68 @@ class IngestionPipeline:
                 except Exception as e:
                     print(f"Error storing pattern: {e}")
 
+        # Step 5: Ordering code combinatorial generation
+        # Extract ordering code breakdown tables and generate ALL product variants
+        if full_text:
+            try:
+                ordering_defs = extract_ordering_code_with_llm(
+                    full_text, metadata.company, metadata.category or ""
+                )
+                for definition in ordering_defs:
+                    generated = generate_products_from_ordering_code(definition, metadata)
+                    if generated:
+                        print(f"Generated {len(generated)} products from ordering code "
+                              f"table for series: {definition.series}")
+                        extracted_products.extend(generated)
+
+                        # Also store as ModelCodePattern rows for future decode use
+                        for seg in definition.segments:
+                            for opt in seg.options:
+                                try:
+                                    pattern = ModelCodePattern(
+                                        company=metadata.company,
+                                        series=definition.series,
+                                        segment_position=seg.position,
+                                        segment_name=seg.segment_name,
+                                        code_value=opt.get("code", ""),
+                                        decoded_value=opt.get("description", ""),
+                                        maps_to_field=opt.get("maps_to_field", ""),
+                                    )
+                                    if pattern.series and pattern.code_value:
+                                        self.db.insert_model_code_pattern(pattern)
+                                except Exception as e:
+                                    print(f"Error storing ordering code pattern: {e}")
+            except Exception as e:
+                print(f"Error in ordering code extraction: {e}")
+
+        # Step 6: Deduplicate by model_code (keep the one with more specs)
+        extracted_products = self._deduplicate_products(extracted_products)
+
         # Attach metadata to all products
         for product in extracted_products:
             if not product.category and metadata.category:
                 product.category = metadata.category
 
         return extracted_products
+
+    @staticmethod
+    def _deduplicate_products(products: list[ExtractedProduct]) -> list[ExtractedProduct]:
+        """Deduplicate by model_code, keeping the product with the most populated specs."""
+        seen = {}
+        for p in products:
+            key = p.model_code.upper().strip()
+            if key in seen:
+                existing = seen[key]
+                # Keep the one with more non-empty spec fields
+                existing_count = sum(1 for v in existing.specs.values()
+                                     if v is not None and v != "")
+                new_count = sum(1 for v in p.specs.values()
+                                if v is not None and v != "")
+                if new_count > existing_count:
+                    seen[key] = p
+            else:
+                seen[key] = p
+        return list(seen.values())
 
     def confirm_and_store(
         self,
@@ -142,8 +266,21 @@ class IngestionPipeline:
     def _extracted_to_hydraulic(
         self, ep: ExtractedProduct, metadata: UploadMetadata
     ) -> HydraulicProduct:
-        """Convert an ExtractedProduct to a HydraulicProduct."""
-        specs = ep.specs or {}
+        """Convert an ExtractedProduct to a HydraulicProduct.
+
+        First maps known field names directly, then uses _FIELD_ALIASES
+        to rescue any remaining specs with non-canonical names.
+        """
+        specs = dict(ep.specs) if ep.specs else {}
+
+        # Alias rescue: before extracting fields, remap any aliased keys
+        aliased_specs = {}
+        for key, value in list(specs.items()):
+            canonical = _FIELD_ALIASES.get(key.lower().strip())
+            if canonical and canonical not in specs:
+                aliased_specs[canonical] = value
+                del specs[key]
+        specs.update(aliased_specs)
 
         product = HydraulicProduct(
             id=str(uuid.uuid4()),
@@ -185,20 +322,42 @@ class IngestionPipeline:
         return product
 
     def _apply_decoded_specs(self, product: HydraulicProduct, decoded: dict):
-        """Apply decoded model code specs to the product, filling in missing fields."""
-        field_mapping = {
-            "coil_voltage": "coil_voltage",
-            "valve_size": "valve_size",
-            "spool_type": "spool_type",
-            "actuator_type": "actuator_type",
-            "port_size": "port_size",
-            "port_type": "port_type",
-            "mounting": "mounting",
-            "seal_material": "seal_material",
-        }
-        for decoded_key, product_field in field_mapping.items():
-            if decoded_key in decoded and not getattr(product, product_field, None):
-                setattr(product, product_field, decoded[decoded_key])
+        """Apply decoded model code specs to the product, filling in missing fields.
+
+        Dynamically handles ALL spec fields, using appropriate type conversion.
+        Uses maps_to_field when available (stored as _field_<segment_name> keys).
+        Only fills fields that are currently None — never overwrites existing data.
+        """
+        for key, value in decoded.items():
+            if key.startswith("_") or key == "series":
+                continue
+
+            # Check if there's an explicit field mapping from decode_model_code
+            mapped_field = decoded.get(f"_field_{key}")
+            target_field = mapped_field if mapped_field and mapped_field in _ALL_SPEC_FIELDS else key
+
+            if target_field not in _ALL_SPEC_FIELDS:
+                # Try alias lookup
+                target_field = _FIELD_ALIASES.get(target_field.lower(), target_field)
+
+            if target_field not in _ALL_SPEC_FIELDS:
+                continue
+
+            # Only fill if currently None
+            if getattr(product, target_field, None) is not None:
+                continue
+
+            # Apply with appropriate type conversion
+            if target_field in _FLOAT_FIELDS:
+                converted = self._safe_float(value)
+                if converted is not None:
+                    setattr(product, target_field, converted)
+            elif target_field in _INT_FIELDS:
+                converted = self._safe_int(value)
+                if converted is not None:
+                    setattr(product, target_field, converted)
+            else:
+                setattr(product, target_field, str(value) if value else None)
 
     @staticmethod
     def _safe_float(val) -> Optional[float]:

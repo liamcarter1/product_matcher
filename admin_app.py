@@ -175,6 +175,7 @@ def process_upload(files, company, doc_type, category, pending_state):
     rows = []
     for ep in all_extracted:
         row = {
+            "Source": ep.source if hasattr(ep, "source") else "llm",
             "Model Code": ep.model_code,
             "Product Name": ep.product_name,
             "Category": ep.category,
@@ -182,14 +183,31 @@ def process_upload(files, company, doc_type, category, pending_state):
         }
         # Add key specs
         for key in ["max_pressure_bar", "max_flow_lpm", "coil_voltage",
-                    "valve_size", "actuator_type", "port_size", "mounting"]:
+                    "valve_size", "seal_material", "actuator_type",
+                    "port_size", "mounting", "num_ports"]:
             row[key] = ep.specs.get(key, "")
         rows.append(row)
 
     df = pd.DataFrame(rows)
+
+    # Build source-aware status message
+    source_counts = {}
+    for ep in all_extracted:
+        src = ep.source if hasattr(ep, "source") else "llm"
+        source_counts[src] = source_counts.get(src, 0) + 1
+
+    source_details = []
+    if source_counts.get("table"):
+        source_details.append(f"{source_counts['table']} from table extraction")
+    if source_counts.get("llm"):
+        source_details.append(f"{source_counts['llm']} from LLM text extraction")
+    if source_counts.get("ordering_code"):
+        source_details.append(f"{source_counts['ordering_code']} generated from ordering code table(s)")
+
     status = (
         f"Extracted {len(all_extracted)} products from {len(file_paths)} file(s). "
-        f"Also indexed {all_chunk_counts} text chunks.\n\n"
+        f"Also indexed {all_chunk_counts} text chunks.\n"
+        f"Sources: {', '.join(source_details)}.\n\n"
         f"File results:\n" + "\n".join(file_summaries) + "\n\n"
         f"Review the products below and click 'Confirm & Index' to add them to the database."
     )
@@ -272,6 +290,8 @@ def search_products(search_term, company_filter):
             "Flow (lpm)": p.max_flow_lpm or "",
             "Coil Voltage": p.coil_voltage or "",
             "Valve Size": p.valve_size or "",
+            "Seal": p.seal_material or "",
+            "Ports": p.num_ports or "",
             "Mounting": p.mounting or "",
         })
 

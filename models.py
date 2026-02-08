@@ -187,6 +187,34 @@ class ExtractedProduct(BaseModel):
     raw_text: str = ""
     page_number: Optional[int] = None
     confidence: float = Field(default=0.0, description="Extraction confidence")
+    source: str = "llm"  # "table", "llm", or "ordering_code"
+
+
+class OrderingCodeSegment(BaseModel):
+    """One position in an ordering code breakdown table."""
+
+    position: int
+    segment_name: str
+    is_fixed: bool = True
+    separator_before: str = ""
+    options: list[dict] = Field(default_factory=list)
+
+
+class OrderingCodeDefinition(BaseModel):
+    """Full ordering code breakdown extracted from a datasheet.
+
+    Example: A Bosch Rexroth 4WRE ordering code table has fixed segments
+    (series, size) and variable segments (flow rate, seal material, interface).
+    The combinatorial generator uses this to produce all valid product variants.
+    """
+
+    company: str
+    series: str
+    product_name: str = ""
+    category: str = ""
+    code_template: str = ""
+    segments: list[OrderingCodeSegment] = Field(default_factory=list)
+    shared_specs: dict = Field(default_factory=dict)
 
 
 class ModelCodePattern(BaseModel):
