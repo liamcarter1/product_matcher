@@ -3,9 +3,12 @@ ProductMatchPro - PDF Ingestion Pipeline
 Orchestrates: parse PDF → extract products → review → store in SQLite + ChromaDB.
 """
 
+import logging
 import uuid
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from models import (
@@ -158,6 +161,12 @@ class IngestionPipeline:
                     if generated:
                         print(f"Generated {len(generated)} products from ordering code "
                               f"table for series: {definition.series}")
+                        # Diagnostic: log segment names and sample spec keys
+                        seg_names = [s.segment_name for s in definition.segments]
+                        logger.info("Ordering code segments: %s", seg_names)
+                        if generated:
+                            sample_keys = sorted(generated[0].specs.keys())
+                            logger.info("Sample product spec keys: %s", sample_keys)
                         extracted_products.extend(generated)
 
                         # Also store as ModelCodePattern rows for future decode use
@@ -220,10 +229,24 @@ class IngestionPipeline:
                                 product.specs["spool_function_description"] = matched_spool.get("description", "")
                             if not product.specs.get("canonical_spool_pattern"):
                                 product.specs["canonical_spool_pattern"] = matched_spool.get("canonical_pattern", "")
+                    merged_count = sum(1 for p in extracted_products
+                                       if p.specs.get("center_condition"))
+                    logger.info("Spool analysis: found %d spool types, merged into %d products",
+                                len(spool_results), merged_count)
                     print(f"Spool analysis: found {len(spool_results)} spool types, "
-                          f"merged into products")
+                          f"merged into {merged_count} products")
             except Exception as e:
                 print(f"Error in spool function analysis: {e}")
+
+        # Diagnostic: log all unique spec keys across extracted products
+        all_spec_keys = set()
+        for p in extracted_products:
+            all_spec_keys.update(p.specs.keys())
+        dynamic_keys = all_spec_keys - {"max_pressure_bar", "max_flow_lpm", "coil_voltage",
+                                         "valve_size", "spool_type", "seal_material",
+                                         "actuator_type", "port_size", "mounting", "num_ports"}
+        logger.info("Total extracted products: %d, all spec keys: %s", len(extracted_products), sorted(all_spec_keys))
+        logger.info("Dynamic (non-standard) spec keys: %s", sorted(dynamic_keys))
 
         # Step 6: Deduplicate by model_code (keep the one with more specs)
         extracted_products = self._deduplicate_products(extracted_products)
@@ -410,6 +433,7 @@ class IngestionPipeline:
         }
         if leftover:
             product.extra_specs = {**(product.extra_specs or {}), **leftover}
+            logger.debug("Product %s extra_specs keys: %s", product.model_code, sorted(leftover.keys()))
 
         return product
 

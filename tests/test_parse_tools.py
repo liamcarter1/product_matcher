@@ -205,7 +205,7 @@ class TestGenerateProductsFromOrderingCode:
         assert "4WE6-E" in codes
 
     def test_spool_type_in_specs(self, metadata):
-        """Spool type should appear in the product specs."""
+        """Spool type should appear in the product specs with ONLY the code."""
         definition = OrderingCodeDefinition(
             company="Bosch Rexroth",
             series="4WE6",
@@ -219,14 +219,14 @@ class TestGenerateProductsFromOrderingCode:
                     position=2, segment_name="spool_type", is_fixed=False,
                     options=[
                         {"code": "D", "maps_to_field": "spool_type",
-                         "maps_to_value": "D - P to A, B to T"},
+                         "maps_to_value": "D", "description": "P to A, B to T"},
                     ],
                 ),
             ],
         )
         products = generate_products_from_ordering_code(definition, metadata)
         assert len(products) == 1
-        assert products[0].specs.get("spool_type") == "D - P to A, B to T"
+        assert products[0].specs.get("spool_type") == "D"
 
     def test_shared_specs_applied(self, metadata):
         definition = OrderingCodeDefinition(

@@ -652,6 +652,7 @@ Text:
             temperature=0.1,
         )
         content = response.choices[0].message.content
+        logger.info("Ordering code LLM response (first 2000 chars): %s", content[:2000])
         data = json.loads(content)
         raw_codes = data.get("ordering_codes", [])
 
@@ -660,9 +661,34 @@ Text:
             try:
                 segments = []
                 for seg_data in raw.get("segments", []):
+                    seg_name = seg_data.get("segment_name", "")
+                    # Defensive fallback: auto-generate segment_name from description if missing
+                    if not seg_name:
+                        desc = ""
+                        opts = seg_data.get("options", [])
+                        if opts:
+                            desc = opts[0].get("description", "")
+                        if not desc:
+                            desc = f"position_{seg_data.get('position', 0)}"
+                        # Convert description to snake_case
+                        seg_name = re.sub(r'[^a-z0-9]+', '_', desc.lower()).strip('_')[:40]
+                        logger.warning("Segment at position %d had no segment_name, "
+                                       "auto-generated: '%s'", seg_data.get("position", 0), seg_name)
+                        seg_data["segment_name"] = seg_name
+
+                    # Defensive fallback: ensure maps_to_field is set on all options
+                    for opt in seg_data.get("options", []):
+                        if not opt.get("maps_to_field"):
+                            opt["maps_to_field"] = seg_name
+                            if opt.get("maps_to_value") is None:
+                                opt["maps_to_value"] = opt.get("description", opt.get("code", ""))
+                            logger.warning("Option code '%s' had no maps_to_field, "
+                                           "set to segment_name: '%s'",
+                                           opt.get("code", ""), seg_name)
+
                     segments.append(OrderingCodeSegment(
                         position=seg_data.get("position", 0),
-                        segment_name=seg_data.get("segment_name", ""),
+                        segment_name=seg_name,
                         is_fixed=seg_data.get("is_fixed", True),
                         separator_before=seg_data.get("separator_before", ""),
                         options=seg_data.get("options", []),
@@ -745,6 +771,7 @@ def generate_products_from_ordering_code(
 
     products = []
     combos = itertools.product(*variable_segments_options) if variable_segments else [()]
+    _logged_first = False
 
     for combo in itertools.islice(combos, MAX_COMBINATIONS):
         segment_values = {}
@@ -760,11 +787,13 @@ def generate_products_from_ordering_code(
                 value = opt.get("maps_to_value")
                 if field and value is not None:
                     specs[field] = value
-                # Always store segment by name so it becomes a visible column
+                # Also store segment by name for a visible column (human-readable)
                 seg_name = seg.segment_name
                 if seg_name and seg_name != field:
                     desc = opt.get("description", "")
-                    specs[seg_name] = f"{code} - {desc}" if code and desc else (desc or code or "")
+                    readable = f"{code} - {desc}" if code and desc else (desc or code or "")
+                    if readable:
+                        specs[seg_name] = readable
 
         # Variable segments: use the chosen option from this combination
         for seg, chosen_option in zip(variable_segments, combo):
@@ -774,16 +803,24 @@ def generate_products_from_ordering_code(
             value = chosen_option.get("maps_to_value")
             if field and value is not None:
                 specs[field] = value
-            # Always store segment by name so it becomes a visible column
+            # Also store segment by name for a visible column (human-readable)
             seg_name = seg.segment_name
             if seg_name and seg_name != field:
                 desc = chosen_option.get("description", "")
-                specs[seg_name] = f"{code} - {desc}" if code and desc else (desc or code or "")
+                readable = f"{code} - {desc}" if code and desc else (desc or code or "")
+                if readable:
+                    specs[seg_name] = readable
 
         # Assemble the model code
         model_code = assemble_model_code(definition.code_template, segment_values)
         if not model_code:
             continue
+
+        # Log the first product's full spec keys for diagnostics
+        if not _logged_first:
+            logger.info("First generated product '%s' spec keys: %s",
+                        model_code, sorted(specs.keys()))
+            _logged_first = True
 
         product = ExtractedProduct(
             model_code=model_code,

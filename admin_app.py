@@ -221,10 +221,22 @@ def process_upload(files, company, doc_type, category, pending_state):
     if source_counts.get("ordering_code"):
         source_details.append(f"{source_counts['ordering_code']} generated from ordering code table(s)")
 
+    # Build dynamic column info for user feedback
+    dynamic_col_info = ""
+    if all_extra_keys:
+        col_names = [k.replace("_", " ").title() for k in all_extra_keys]
+        dynamic_col_info = (
+            f"\nDynamic columns discovered ({len(all_extra_keys)}): "
+            f"{', '.join(col_names)}\n"
+        )
+    else:
+        dynamic_col_info = "\nNo dynamic columns found beyond standard fields.\n"
+
     status = (
         f"Extracted {len(all_extracted)} products from {len(file_paths)} file(s). "
         f"Also indexed {all_chunk_counts} text chunks.\n"
-        f"Sources: {', '.join(source_details)}.\n\n"
+        f"Sources: {', '.join(source_details)}.\n"
+        f"{dynamic_col_info}\n"
         f"File results:\n" + "\n".join(file_summaries) + "\n\n"
         f"Review the products below and click 'Confirm & Index' to add them to the database."
     )
