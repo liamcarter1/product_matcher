@@ -497,22 +497,23 @@ class TestExtraSpecs:
         assert retrieved is not None
         assert retrieved.extra_specs == {} or retrieved.extra_specs is None
 
-    def test_extra_specs_with_spool_function(self, db):
-        """Spool function structured data should survive roundtrip."""
-        spool_fn = {
-            "center_condition": "All ports blocked",
-            "solenoid_a_function": "P→A, B→T",
-            "solenoid_b_function": "P→B, A→T",
-            "canonical_pattern": "BLOCKED|AB-PT|AT-PB",
-        }
+    def test_extra_specs_with_spool_function_flat(self, db):
+        """Flat spool function keys should survive roundtrip."""
         product = HydraulicProduct(
             id=str(uuid.uuid4()), company="TestCo",
             model_code="ES-003",
-            extra_specs={"_spool_function": spool_fn, "design_number": "5"},
+            extra_specs={
+                "center_condition": "All ports blocked",
+                "solenoid_a_energised": "P→A, B→T",
+                "solenoid_b_energised": "P→B, A→T",
+                "canonical_spool_pattern": "BLOCKED|AB-PT|AT-PB",
+                "design_number": "5",
+            },
         )
         db.insert_product(product)
         retrieved = db.get_product(product.id)
-        assert retrieved.extra_specs["_spool_function"]["canonical_pattern"] == "BLOCKED|AB-PT|AT-PB"
+        assert retrieved.extra_specs["canonical_spool_pattern"] == "BLOCKED|AB-PT|AT-PB"
+        assert retrieved.extra_specs["center_condition"] == "All ports blocked"
         assert retrieved.extra_specs["design_number"] == "5"
 
     def test_schema_migration_idempotent(self, db):
@@ -529,12 +530,12 @@ class TestCanonicalSpoolMatching:
         comp = HydraulicProduct(
             id="c1", company="Danfoss", model_code="C1",
             category="directional_valves", spool_type="2A",
-            extra_specs={"_spool_function": {"canonical_pattern": "BLOCKED|PA-BT|AT-PB"}},
+            extra_specs={"canonical_spool_pattern": "BLOCKED|PA-BT|AT-PB"},
         )
         cand = HydraulicProduct(
             id="c2", company="Bosch", model_code="C2",
             category="directional_valves", spool_type="D",
-            extra_specs={"_spool_function": {"canonical_pattern": "BLOCKED|PA-BT|AT-PB"}},
+            extra_specs={"canonical_spool_pattern": "BLOCKED|PA-BT|AT-PB"},
         )
         _, breakdown = db.spec_comparison(comp, cand)
         assert breakdown.spool_function_match == 1.0
@@ -544,12 +545,12 @@ class TestCanonicalSpoolMatching:
         comp = HydraulicProduct(
             id="c3", company="Danfoss", model_code="C3",
             category="directional_valves", spool_type="2A",
-            extra_specs={"_spool_function": {"canonical_pattern": "BLOCKED|PA-BT|AT-PB"}},
+            extra_specs={"canonical_spool_pattern": "BLOCKED|PA-BT|AT-PB"},
         )
         cand = HydraulicProduct(
             id="c4", company="Bosch", model_code="C4",
             category="directional_valves", spool_type="H",
-            extra_specs={"_spool_function": {"canonical_pattern": "OPEN|PA-BT|AT-PB"}},
+            extra_specs={"canonical_spool_pattern": "OPEN|PA-BT|AT-PB"},
         )
         _, breakdown = db.spec_comparison(comp, cand)
         assert breakdown.spool_function_match == 0.0

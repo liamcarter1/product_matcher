@@ -478,17 +478,17 @@ class TestExtraSpecsPreservation:
         assert product.extra_specs.get("flow_class") == "high"
         assert product.extra_specs.get("interface_standard") == "ISO 4401"
 
-    def test_spool_function_preserved_in_extra_specs(self, pipeline):
-        """_spool_function structured data should end up in extra_specs."""
+    def test_spool_function_flat_keys_in_extra_specs(self, pipeline):
+        """Flat spool function keys should end up in extra_specs as visible columns."""
         ep = ExtractedProduct(
             model_code="TEST-002",
             category="directional_valves",
             specs={
                 "spool_type": "2A",
-                "_spool_function": {
-                    "center_condition": "All ports blocked",
-                    "canonical_pattern": "BLOCKED|PA-BT|AT-PB",
-                },
+                "center_condition": "All ports blocked",
+                "solenoid_a_energised": "P→A, B→T",
+                "solenoid_b_energised": "P→B, A→T",
+                "canonical_spool_pattern": "BLOCKED|PA-BT|AT-PB",
             },
         )
         metadata = UploadMetadata(
@@ -498,8 +498,9 @@ class TestExtraSpecsPreservation:
         product = pipeline._extracted_to_hydraulic(ep, metadata)
         assert product.spool_type == "2A"
         assert product.extra_specs is not None
-        assert "_spool_function" in product.extra_specs
-        assert product.extra_specs["_spool_function"]["center_condition"] == "All ports blocked"
+        assert product.extra_specs.get("center_condition") == "All ports blocked"
+        assert product.extra_specs.get("solenoid_a_energised") == "P→A, B→T"
+        assert product.extra_specs.get("canonical_spool_pattern") == "BLOCKED|PA-BT|AT-PB"
 
     def test_no_extra_specs_when_all_known(self, pipeline):
         """If all specs match known fields, extra_specs should be empty/None."""

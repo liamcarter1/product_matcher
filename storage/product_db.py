@@ -518,11 +518,9 @@ class ProductDB:
         spool_score = self._exact_match(
             competitor.spool_type, candidate.spool_type
         )
-        # Upgrade: if both have canonical spool patterns, use those for matching
-        comp_spool_fn = (competitor.extra_specs or {}).get("_spool_function", {})
-        cand_spool_fn = (candidate.extra_specs or {}).get("_spool_function", {})
-        comp_pattern = comp_spool_fn.get("canonical_pattern") if isinstance(comp_spool_fn, dict) else None
-        cand_pattern = cand_spool_fn.get("canonical_pattern") if isinstance(cand_spool_fn, dict) else None
+        # Upgrade: if both have canonical spool patterns (flat key), use those for matching
+        comp_pattern = (competitor.extra_specs or {}).get("canonical_spool_pattern")
+        cand_pattern = (candidate.extra_specs or {}).get("canonical_spool_pattern")
         if comp_pattern and cand_pattern:
             spool_score = 1.0 if comp_pattern == cand_pattern else 0.0
         breakdown.spool_function_match = spool_score

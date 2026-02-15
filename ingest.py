@@ -209,14 +209,17 @@ class IngestionPipeline:
                                     matched_spool = data
                                     break
                         if matched_spool:
-                            if not product.specs.get("_spool_function"):
-                                product.specs["_spool_function"] = {
-                                    "center_condition": matched_spool.get("center_condition", ""),
-                                    "solenoid_a_function": matched_spool.get("solenoid_a_function", ""),
-                                    "solenoid_b_function": matched_spool.get("solenoid_b_function", ""),
-                                    "description": matched_spool.get("description", ""),
-                                    "canonical_pattern": matched_spool.get("canonical_pattern", ""),
-                                }
+                            # Store as flat keys (not nested) so they become visible columns
+                            if not product.specs.get("center_condition"):
+                                product.specs["center_condition"] = matched_spool.get("center_condition", "")
+                            if not product.specs.get("solenoid_a_energised"):
+                                product.specs["solenoid_a_energised"] = matched_spool.get("solenoid_a_function", "")
+                            if not product.specs.get("solenoid_b_energised"):
+                                product.specs["solenoid_b_energised"] = matched_spool.get("solenoid_b_function", "")
+                            if not product.specs.get("spool_function_description"):
+                                product.specs["spool_function_description"] = matched_spool.get("description", "")
+                            if not product.specs.get("canonical_spool_pattern"):
+                                product.specs["canonical_spool_pattern"] = matched_spool.get("canonical_pattern", "")
                     print(f"Spool analysis: found {len(spool_results)} spool types, "
                           f"merged into products")
             except Exception as e:
@@ -399,19 +402,14 @@ class IngestionPipeline:
             raw_text=ep.raw_text,
         )
 
-        # Collect leftover specs into extra_specs (these didn't match any known field)
+        # Collect ALL leftover specs into extra_specs (these didn't match any known field)
+        # Each becomes a visible column in the admin UI
         leftover = {
             k: v for k, v in specs.items()
             if v is not None and v != ""
-            and not k.startswith("_")
         }
-        # Also collect _ prefixed structured data (e.g. _spool_function)
-        structured = {
-            k: v for k, v in specs.items()
-            if k.startswith("_") and v is not None and v != ""
-        }
-        if leftover or structured:
-            product.extra_specs = {**(product.extra_specs or {}), **leftover, **structured}
+        if leftover:
+            product.extra_specs = {**(product.extra_specs or {}), **leftover}
 
         return product
 

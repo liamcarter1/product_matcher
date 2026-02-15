@@ -588,7 +588,7 @@ For EACH ordering code table, return:
    - "options": array of value options, each with:
      - "code": the characters that appear in the model code (e.g. "04", "V", "WRE"). Use "" (empty string) for "no code" options.
      - "description": human-readable meaning (e.g. "4 l/min", "FKM seals")
-     - "maps_to_field": which HydraulicProduct spec field this sets. Preferred known fields: {', '.join(sorted(_VALID_SPEC_FIELDS))}. You may also use ANY descriptive snake_case field name for specs not in this list (e.g. "design_number", "flow_class", "interface_standard", "response_time_ms"). Use "" if it doesn't map to any spec field (e.g. series identifier).
+     - "maps_to_field": which spec field this sets. Known fields: {', '.join(sorted(_VALID_SPEC_FIELDS))}. You may also use ANY descriptive snake_case field name for specs not in this list (e.g. "design_number", "flow_class", "interface_standard", "manual_override", "connection_type"). EVERY segment must map to a field — use the segment_name if no known field fits (e.g. "series_code" for a series identifier).
      - "maps_to_value": the value to store in that field (e.g. 4 for max_flow_lpm, "FKM" for seal_material, "24VDC" for coil_voltage). Use the appropriate type (number for numeric fields, string for text fields).
 6. "shared_specs": object with any specifications that apply to ALL variants from this table (e.g. {{"max_pressure_bar": 315}}).
    Extract these from the document text around the ordering code table.
@@ -607,11 +607,18 @@ Spool type codes vary by manufacturer:
 - Parker: numeric codes like "01", "02", "06", "11", "12", "20", "30", "60", "70".
 - MOOG: letter codes embedded in the model number.
 
-The maps_to_value for spool type should include BOTH the code AND a functional description, e.g.:
-  "D - P to A, B to T" or "2A - All ports open to tank in center" or "H - P blocked, A&B to T"
-This functional description is essential for cross-referencing equivalent spools between manufacturers.
+The maps_to_value for spool type must be ONLY the code itself, e.g.: "D", "2A", "2C", "H", "01".
+Do NOT include the functional description in maps_to_value for spool_type.
 
-Common center condition functions to recognize:
+Instead, for each spool type option, ALSO create a SECOND entry in the same option with:
+  maps_to_field: "spool_function_description" and maps_to_value: the functional description.
+This is done by setting BOTH fields on the same option object — the system will store both.
+
+Actually, since each option can only set one maps_to_field, instead set maps_to_field to "spool_type"
+with maps_to_value as ONLY the code (e.g. "D", "2A"). The system's spool analysis will separately
+determine center conditions and solenoid functions from the document symbols/tables.
+
+Common spool function types to recognize in segment descriptions:
 - All ports blocked (closed center)
 - All ports open to tank (open center / tandem)
 - P blocked, A&B to T (float center)
@@ -620,7 +627,10 @@ Common center condition functions to recognize:
 - P to A&B, T blocked (regenerative)
 - A&B blocked, P to T (unloading)
 
-CRITICAL RULES:
+SEGMENT NAMING RULES — CRITICAL:
+- EVERY segment MUST have a meaningful "segment_name" in snake_case (e.g. "manual_override", "design_number", "connection_type")
+- EVERY segment MUST have maps_to_field set to either a known spec field OR the segment_name itself
+- Do NOT use "" for maps_to_field — every segment maps to something. If it's a series identifier, use maps_to_field: "series_code"
 - Include ALL positions, both fixed and variable
 - For "no code" options (where nothing appears in the model code), set "code" to "" (empty string)
 - Skip positions marked as "free text" or "further details" — do not include them
@@ -744,19 +754,31 @@ def generate_products_from_ordering_code(
         for seg in fixed_segments:
             if seg.options:
                 opt = seg.options[0]
-                segment_values[seg.position] = opt.get("code", "")
+                code = opt.get("code", "")
+                segment_values[seg.position] = code
                 field = opt.get("maps_to_field", "")
                 value = opt.get("maps_to_value")
                 if field and value is not None:
                     specs[field] = value
+                # Always store segment by name so it becomes a visible column
+                seg_name = seg.segment_name
+                if seg_name and seg_name != field:
+                    desc = opt.get("description", "")
+                    specs[seg_name] = f"{code} - {desc}" if code and desc else (desc or code or "")
 
         # Variable segments: use the chosen option from this combination
         for seg, chosen_option in zip(variable_segments, combo):
-            segment_values[seg.position] = chosen_option.get("code", "")
+            code = chosen_option.get("code", "")
+            segment_values[seg.position] = code
             field = chosen_option.get("maps_to_field", "")
             value = chosen_option.get("maps_to_value")
             if field and value is not None:
                 specs[field] = value
+            # Always store segment by name so it becomes a visible column
+            seg_name = seg.segment_name
+            if seg_name and seg_name != field:
+                desc = chosen_option.get("description", "")
+                specs[seg_name] = f"{code} - {desc}" if code and desc else (desc or code or "")
 
         # Assemble the model code
         model_code = assemble_model_code(definition.code_template, segment_values)

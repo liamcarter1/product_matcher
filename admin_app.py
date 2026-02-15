@@ -171,7 +171,19 @@ def process_upload(files, company, doc_type, category, pending_state):
         },
     }
 
-    # Build a review dataframe
+    # First: discover ALL dynamic spec keys across all extracted products
+    known_keys = {"max_pressure_bar", "max_flow_lpm", "coil_voltage",
+                  "valve_size", "spool_type", "seal_material", "actuator_type",
+                  "port_size", "mounting", "num_ports"}
+    all_extra_keys = []
+    seen_extra = set()
+    for ep in all_extracted:
+        for k in (ep.specs or {}):
+            if not k.startswith("_") and k not in known_keys and k not in seen_extra:
+                seen_extra.add(k)
+                all_extra_keys.append(k)
+
+    # Build a review dataframe with consistent columns
     rows = []
     for ep in all_extracted:
         row = {
@@ -181,25 +193,16 @@ def process_upload(files, company, doc_type, category, pending_state):
             "Category": ep.category,
             "Confidence": f"{ep.confidence:.0%}",
         }
-        # Add key specs
+        # Add known key specs
         for key in ["max_pressure_bar", "max_flow_lpm", "coil_voltage",
                     "valve_size", "spool_type", "seal_material", "actuator_type",
                     "port_size", "mounting", "num_ports"]:
             row[key] = ep.specs.get(key, "")
-        # Add spool function data if present
-        spool_fn = ep.specs.get("_spool_function", {})
-        if isinstance(spool_fn, dict) and spool_fn:
-            row["Center Condition"] = spool_fn.get("center_condition", "")
-            row["Sol A Function"] = spool_fn.get("solenoid_a_function", "")
-            row["Sol B Function"] = spool_fn.get("solenoid_b_function", "")
-        # Add dynamic extra specs (non-underscore keys not in known list)
-        known_keys = {"max_pressure_bar", "max_flow_lpm", "coil_voltage",
-                      "valve_size", "spool_type", "seal_material", "actuator_type",
-                      "port_size", "mounting", "num_ports"}
-        for k, v in ep.specs.items():
-            if not k.startswith("_") and k not in known_keys and v is not None and v != "":
-                col_name = k.replace("_", " ").title()
-                row[col_name] = str(v)
+        # Add ALL discovered dynamic specs (consistent columns across all rows)
+        for k in all_extra_keys:
+            col_name = k.replace("_", " ").title()
+            v = ep.specs.get(k, "")
+            row[col_name] = str(v) if v is not None and v != "" else ""
         rows.append(row)
 
     df = pd.DataFrame(rows)
@@ -292,8 +295,20 @@ def search_products(search_term, company_filter):
             or search_upper in p.product_name.upper()
         ]
 
+    # First pass: discover ALL dynamic column names across all products
+    display_products = products[:100]
+    all_extra_columns = []
+    seen_extra = set()
+    for p in display_products:
+        if p.extra_specs:
+            for k in p.extra_specs:
+                if not k.startswith("_") and k not in seen_extra:
+                    seen_extra.add(k)
+                    all_extra_columns.append(k)
+
+    # Second pass: build rows with consistent columns
     rows = []
-    for p in products[:100]:
+    for p in display_products:
         row = {
             "ID": p.id[:8],
             "Company": p.company,
@@ -309,17 +324,12 @@ def search_products(search_term, company_filter):
             "Ports": p.num_ports or "",
             "Mounting": p.mounting or "",
         }
-        # Dynamic columns from extra_specs
-        if p.extra_specs:
-            spool_fn = p.extra_specs.get("_spool_function", {})
-            if isinstance(spool_fn, dict) and spool_fn:
-                row["Center Condition"] = spool_fn.get("center_condition", "")
-                row["Sol A Function"] = spool_fn.get("solenoid_a_function", "")
-                row["Sol B Function"] = spool_fn.get("solenoid_b_function", "")
-            for k, v in p.extra_specs.items():
-                if not k.startswith("_") and v is not None and v != "":
-                    col_name = k.replace("_", " ").title()
-                    row[col_name] = str(v)
+        # Add ALL discovered extra_specs columns (consistent across all rows)
+        extra = p.extra_specs or {}
+        for k in all_extra_columns:
+            col_name = k.replace("_", " ").title()
+            v = extra.get(k, "")
+            row[col_name] = str(v) if v is not None and v != "" else ""
         rows.append(row)
 
     return pd.DataFrame(rows) if rows else pd.DataFrame()
