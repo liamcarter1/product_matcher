@@ -441,4 +441,21 @@ class VectorStore:
         if product.description:
             parts.append(product.description)
 
+        # Include extra_specs in indexable text
+        if product.extra_specs:
+            extra_parts = []
+            for k, v in product.extra_specs.items():
+                if k == "_spool_function" and isinstance(v, dict):
+                    # Include spool function description for semantic search
+                    sf_desc = v.get("description", "")
+                    sf_center = v.get("center_condition", "")
+                    if sf_desc:
+                        extra_parts.append(f"Spool function: {sf_desc}")
+                    if sf_center:
+                        extra_parts.append(f"Center condition: {sf_center}")
+                elif not k.startswith("_"):
+                    extra_parts.append(f"{k.replace('_', ' ')}: {v}")
+            if extra_parts:
+                parts.append("Additional: " + ", ".join(extra_parts))
+
         return "\n".join(p for p in parts if p)

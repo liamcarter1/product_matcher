@@ -186,6 +186,20 @@ def process_upload(files, company, doc_type, category, pending_state):
                     "valve_size", "spool_type", "seal_material", "actuator_type",
                     "port_size", "mounting", "num_ports"]:
             row[key] = ep.specs.get(key, "")
+        # Add spool function data if present
+        spool_fn = ep.specs.get("_spool_function", {})
+        if isinstance(spool_fn, dict) and spool_fn:
+            row["Center Condition"] = spool_fn.get("center_condition", "")
+            row["Sol A Function"] = spool_fn.get("solenoid_a_function", "")
+            row["Sol B Function"] = spool_fn.get("solenoid_b_function", "")
+        # Add dynamic extra specs (non-underscore keys not in known list)
+        known_keys = {"max_pressure_bar", "max_flow_lpm", "coil_voltage",
+                      "valve_size", "spool_type", "seal_material", "actuator_type",
+                      "port_size", "mounting", "num_ports"}
+        for k, v in ep.specs.items():
+            if not k.startswith("_") and k not in known_keys and v is not None and v != "":
+                col_name = k.replace("_", " ").title()
+                row[col_name] = str(v)
         rows.append(row)
 
     df = pd.DataFrame(rows)
@@ -280,7 +294,7 @@ def search_products(search_term, company_filter):
 
     rows = []
     for p in products[:100]:
-        rows.append({
+        row = {
             "ID": p.id[:8],
             "Company": p.company,
             "Model Code": p.model_code,
@@ -294,7 +308,19 @@ def search_products(search_term, company_filter):
             "Seal": p.seal_material or "",
             "Ports": p.num_ports or "",
             "Mounting": p.mounting or "",
-        })
+        }
+        # Dynamic columns from extra_specs
+        if p.extra_specs:
+            spool_fn = p.extra_specs.get("_spool_function", {})
+            if isinstance(spool_fn, dict) and spool_fn:
+                row["Center Condition"] = spool_fn.get("center_condition", "")
+                row["Sol A Function"] = spool_fn.get("solenoid_a_function", "")
+                row["Sol B Function"] = spool_fn.get("solenoid_b_function", "")
+            for k, v in p.extra_specs.items():
+                if not k.startswith("_") and v is not None and v != "":
+                    col_name = k.replace("_", " ").title()
+                    row[col_name] = str(v)
+        rows.append(row)
 
     return pd.DataFrame(rows) if rows else pd.DataFrame()
 

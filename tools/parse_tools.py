@@ -391,6 +391,12 @@ Extract ALL products mentioned in the following text. For each product, extract:
 IMPORTANT: coil_voltage must be a string like "24VDC" or "110VAC", NEVER a bare number like 24.
 IMPORTANT: port_size must keep its prefix like "G3/8" or "SAE-10", NEVER strip to just "3/8".
 
+Also extract ANY other specification fields found in the document as additional key-value pairs.
+Use descriptive snake_case names for any field not in the list above (e.g. "response_time_ms",
+"hysteresis_percent", "step_response_ms", "repeat_accuracy_percent", "design_number",
+"flow_class", "interface_standard", "connector_type", "special_function").
+Do NOT omit any data — capture every specification mentioned in the text.
+
 Company: {metadata.company}
 Document type: {metadata.document_type}
 
@@ -582,7 +588,7 @@ For EACH ordering code table, return:
    - "options": array of value options, each with:
      - "code": the characters that appear in the model code (e.g. "04", "V", "WRE"). Use "" (empty string) for "no code" options.
      - "description": human-readable meaning (e.g. "4 l/min", "FKM seals")
-     - "maps_to_field": which HydraulicProduct spec field this sets. Use EXACTLY one of: {', '.join(sorted(_VALID_SPEC_FIELDS))}. Use "" if it doesn't map to any spec field (e.g. series identifier, design series).
+     - "maps_to_field": which HydraulicProduct spec field this sets. Preferred known fields: {', '.join(sorted(_VALID_SPEC_FIELDS))}. You may also use ANY descriptive snake_case field name for specs not in this list (e.g. "design_number", "flow_class", "interface_standard", "response_time_ms"). Use "" if it doesn't map to any spec field (e.g. series identifier).
      - "maps_to_value": the value to store in that field (e.g. 4 for max_flow_lpm, "FKM" for seal_material, "24VDC" for coil_voltage). Use the appropriate type (number for numeric fields, string for text fields).
 6. "shared_specs": object with any specifications that apply to ALL variants from this table (e.g. {{"max_pressure_bar": 315}}).
    Extract these from the document text around the ordering code table.
@@ -741,7 +747,7 @@ def generate_products_from_ordering_code(
                 segment_values[seg.position] = opt.get("code", "")
                 field = opt.get("maps_to_field", "")
                 value = opt.get("maps_to_value")
-                if field and field in _VALID_SPEC_FIELDS and value is not None:
+                if field and value is not None:
                     specs[field] = value
 
         # Variable segments: use the chosen option from this combination
@@ -749,7 +755,7 @@ def generate_products_from_ordering_code(
             segment_values[seg.position] = chosen_option.get("code", "")
             field = chosen_option.get("maps_to_field", "")
             value = chosen_option.get("maps_to_value")
-            if field and field in _VALID_SPEC_FIELDS and value is not None:
+            if field and value is not None:
                 specs[field] = value
 
         # Assemble the model code
@@ -769,3 +775,180 @@ def generate_products_from_ordering_code(
         products.append(product)
 
     return products
+
+
+# ---------------------------------------------------------------------------
+# Step 5: Deep spool function analysis
+# ---------------------------------------------------------------------------
+
+def compute_canonical_pattern(center_condition: str, sol_a_function: str, sol_b_function: str) -> str:
+    """Normalise spool flow-path descriptions into a deterministic canonical string.
+
+    This allows cross-manufacturer matching: Danfoss "2A" and Bosch "D" both
+    produce "BLOCKED|PA-BT|PB-AT" because they share the same flow paths.
+
+    Each position is normalised by:
+      1. Uppercasing
+      2. Extracting port connections (e.g. P→A, B→T becomes PA-BT)
+      3. Sorting connections alphabetically within each position
+      4. Joining positions with |
+    """
+
+    def _normalise_position(desc: str) -> str:
+        if not desc:
+            return "UNKNOWN"
+        desc = desc.upper().strip()
+
+        # Common center condition keywords — check more specific patterns FIRST
+        # (float/tandem/open descriptions may contain "blocked" as a substring)
+        float_keywords = ["FLOAT", "FLOATING"]
+        tandem_keywords = ["TANDEM", "P-T CONNECTED", "PA-BT TANDEM"]
+        open_keywords = ["ALL PORTS OPEN", "OPEN CENTER", "OPEN CENTRE", "ALL OPEN", "FREE FLOW"]
+        blocked_keywords = ["ALL PORTS BLOCKED", "BLOCKED", "CLOSED", "ALL CLOSED"]
+
+        for kw in float_keywords:
+            if kw in desc:
+                return "FLOAT"
+        for kw in tandem_keywords:
+            if kw in desc:
+                return "TANDEM"
+        for kw in open_keywords:
+            if kw in desc:
+                return "OPEN"
+        for kw in blocked_keywords:
+            if kw in desc:
+                return "BLOCKED"
+
+        # Extract port connections like P→A, B→T or P-A, B-T or PA, BT
+        connections = re.findall(r'([PABTLR])\s*[→\->to\s]+\s*([PABTLR])', desc)
+        if connections:
+            parts = sorted([f"{a}{b}" for a, b in connections])
+            return "-".join(parts)
+
+        # Fallback: clean up and return as-is
+        clean = re.sub(r'[^A-Z0-9\- ]', '', desc).strip()
+        return clean if clean else "UNKNOWN"
+
+    center = _normalise_position(center_condition)
+    sol_a = _normalise_position(sol_a_function)
+    sol_b = _normalise_position(sol_b_function)
+
+    return f"{center}|{sol_a}|{sol_b}"
+
+
+def analyze_spool_functions(text: str, company: str) -> list[dict]:
+    """Perform a deep second-pass LLM analysis of spool/valve function symbols.
+
+    Reads the full user guide text and extracts structured spool function data
+    for every spool type mentioned.  Uses hydraulic engineering domain knowledge
+    to understand centre conditions and solenoid functions.
+
+    Returns a list of dicts, each with:
+        spool_code, center_condition, solenoid_a_function, solenoid_b_function,
+        description, canonical_pattern
+    """
+    load_dotenv()
+    client = OpenAI()
+
+    # Truncate to avoid token limits while keeping enough context
+    max_chars = 80_000
+    if len(text) > max_chars:
+        text = text[:max_chars]
+
+    prompt = f"""You are an expert hydraulic engineer analysing a product user guide from {company}.
+
+Your task: identify EVERY spool type / valve function code mentioned in this document and
+extract detailed functional information about each one.
+
+For each spool type found, provide:
+1. **spool_code**: the code designation (e.g. "2A", "2C", "4A", "D", "H", "K", "OC")
+2. **center_condition**: what happens when the valve is in the center/neutral position
+   (e.g. "All ports blocked", "All ports open", "P and T connected, A and B blocked",
+   "Float - A, B, T connected, P blocked")
+3. **solenoid_a_function**: flow path when solenoid A (or left solenoid) is energised
+   (e.g. "P→A, B→T")
+4. **solenoid_b_function**: flow path when solenoid B (or right solenoid) is energised
+   (e.g. "P→B, A→T")
+5. **description**: a brief human-readable summary of the spool function
+
+Look carefully at:
+- Ordering code breakdown tables (spool type segment)
+- Hydraulic circuit symbol diagrams (described in text as flow paths)
+- Centre condition tables
+- Any tables showing port connections per spool position
+- Valve function descriptions in the text
+
+If the document shows a spool symbol diagram, interpret the flow arrows to determine
+port connections in each position (left = solenoid A energised, center = neutral,
+right = solenoid B energised).
+
+For 2-position valves (no center condition), set center_condition to "N/A (2-position valve)"
+and only fill solenoid_a_function.
+
+Return valid JSON array. Example:
+[
+  {{
+    "spool_code": "2A",
+    "center_condition": "All ports blocked",
+    "solenoid_a_function": "P→A, B→T",
+    "solenoid_b_function": "P→B, A→T",
+    "description": "Closed center, standard crossover"
+  }},
+  {{
+    "spool_code": "2C",
+    "center_condition": "All ports blocked (no crossover)",
+    "solenoid_a_function": "P→A, B→T",
+    "solenoid_b_function": "P→B, A→T",
+    "description": "Closed center, no crossover in transition"
+  }}
+]
+
+If NO spool types are found in the document, return an empty array: []
+
+DOCUMENT TEXT:
+{text}"""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            response_format={"type": "json_object"},
+        )
+
+        raw = response.choices[0].message.content.strip()
+        parsed = json.loads(raw)
+
+        # Handle both {"spool_functions": [...]} and direct [...]
+        if isinstance(parsed, dict):
+            # Find the first list value
+            for v in parsed.values():
+                if isinstance(v, list):
+                    parsed = v
+                    break
+            else:
+                parsed = []
+
+        if not isinstance(parsed, list):
+            logger.warning("Spool analysis returned non-list: %s", type(parsed))
+            return []
+
+        # Enrich each result with canonical pattern
+        results = []
+        for item in parsed:
+            if not isinstance(item, dict) or not item.get("spool_code"):
+                continue
+
+            item["canonical_pattern"] = compute_canonical_pattern(
+                item.get("center_condition", ""),
+                item.get("solenoid_a_function", ""),
+                item.get("solenoid_b_function", ""),
+            )
+            results.append(item)
+
+        logger.info("Spool function analysis found %d spool types for %s", len(results), company)
+        return results
+
+    except Exception as e:
+        logger.error("Spool function analysis failed: %s", e)
+        return []

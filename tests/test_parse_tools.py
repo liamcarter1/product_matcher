@@ -16,6 +16,7 @@ from tools.parse_tools import (
     assemble_model_code,
     generate_products_from_ordering_code,
     table_rows_to_products,
+    compute_canonical_pattern,
     HEADER_MAPPINGS,
     _VALID_SPEC_FIELDS,
     MAX_COMBINATIONS,
@@ -299,7 +300,9 @@ class TestGenerateProductsFromOrderingCode:
         )
         products = generate_products_from_ordering_code(definition, metadata)
         assert len(products) == 1
-        assert "nonexistent_field" not in products[0].specs
+        # After Step 4: unknown field names are now KEPT (stored in extra_specs later)
+        assert "nonexistent_field" in products[0].specs
+        assert products[0].specs["nonexistent_field"] == "ignored"
 
     def test_multi_variable_segments(self, metadata):
         """Two variable segments should produce cartesian product."""
@@ -536,3 +539,62 @@ class TestLLMPromptContent:
         assert "spool_type" in prompt
         assert "coil_voltage" in prompt
         assert "seal_material" in prompt
+
+
+class TestComputeCanonicalPattern:
+    """Tests for the canonical spool pattern normalisation function."""
+
+    def test_blocked_center_standard_crossover(self):
+        """Danfoss 2A / Bosch D style: blocked center, standard crossover."""
+        pattern = compute_canonical_pattern(
+            "All ports blocked", "P→A, B→T", "P→B, A→T"
+        )
+        assert pattern.startswith("BLOCKED|")
+
+    def test_open_center(self):
+        pattern = compute_canonical_pattern(
+            "All ports open", "P→A, B→T", "P→B, A→T"
+        )
+        assert pattern.startswith("OPEN|")
+
+    def test_float_center(self):
+        pattern = compute_canonical_pattern(
+            "Float - A, B, T connected, P blocked", "P→A, B→T", "P→B, A→T"
+        )
+        assert pattern.startswith("FLOAT|")
+
+    def test_tandem_center(self):
+        pattern = compute_canonical_pattern(
+            "P-T connected, A and B blocked", "P→A, B→T", "P→B, A→T"
+        )
+        assert pattern.startswith("TANDEM|")
+
+    def test_empty_inputs(self):
+        pattern = compute_canonical_pattern("", "", "")
+        assert pattern == "UNKNOWN|UNKNOWN|UNKNOWN"
+
+    def test_cross_manufacturer_equivalence(self):
+        """Danfoss 2A and Bosch D should produce the same canonical pattern."""
+        danfoss = compute_canonical_pattern(
+            "All ports blocked", "P→A, B→T", "P→B, A→T"
+        )
+        bosch = compute_canonical_pattern(
+            "All ports blocked", "P→A, B→T", "P→B, A→T"
+        )
+        assert danfoss == bosch
+
+    def test_different_center_condition_differs(self):
+        """Different center conditions should produce different patterns."""
+        blocked = compute_canonical_pattern(
+            "All ports blocked", "P→A, B→T", "P→B, A→T"
+        )
+        open_c = compute_canonical_pattern(
+            "All ports open", "P→A, B→T", "P→B, A→T"
+        )
+        assert blocked != open_c
+
+    def test_deterministic(self):
+        """Same inputs should always produce the same output."""
+        p1 = compute_canonical_pattern("Blocked", "P→A, B→T", "P→B, A→T")
+        p2 = compute_canonical_pattern("Blocked", "P→A, B→T", "P→B, A→T")
+        assert p1 == p2

@@ -441,3 +441,86 @@ class TestConstants:
             assert field_name in HydraulicProduct.model_fields, (
                 f"Spec field {field_name} not on HydraulicProduct"
             )
+
+
+class TestExtraSpecsPreservation:
+    """Tests that unknown specs are preserved in extra_specs."""
+
+    @pytest.fixture
+    def pipeline(self, tmp_path):
+        from ingest import IngestionPipeline
+        from storage.product_db import ProductDB
+        from storage.vector_store import VectorStore
+        db = ProductDB(str(tmp_path / "test.db"))
+        vs = VectorStore(str(tmp_path / "vectors"))
+        return IngestionPipeline(db=db, vector_store=vs)
+
+    def test_leftover_specs_stored_in_extra_specs(self, pipeline):
+        """Specs that don't match known fields should go to extra_specs."""
+        ep = ExtractedProduct(
+            model_code="TEST-001",
+            category="directional_valves",
+            specs={
+                "max_pressure_bar": 315,
+                "design_number": "42",
+                "flow_class": "high",
+                "interface_standard": "ISO 4401",
+            },
+        )
+        metadata = UploadMetadata(
+            company="TestCo", document_type=DocumentType.CATALOGUE,
+            filename="test.pdf",
+        )
+        product = pipeline._extracted_to_hydraulic(ep, metadata)
+        assert product.max_pressure_bar == 315.0
+        assert product.extra_specs is not None
+        assert product.extra_specs.get("design_number") == "42"
+        assert product.extra_specs.get("flow_class") == "high"
+        assert product.extra_specs.get("interface_standard") == "ISO 4401"
+
+    def test_spool_function_preserved_in_extra_specs(self, pipeline):
+        """_spool_function structured data should end up in extra_specs."""
+        ep = ExtractedProduct(
+            model_code="TEST-002",
+            category="directional_valves",
+            specs={
+                "spool_type": "2A",
+                "_spool_function": {
+                    "center_condition": "All ports blocked",
+                    "canonical_pattern": "BLOCKED|PA-BT|AT-PB",
+                },
+            },
+        )
+        metadata = UploadMetadata(
+            company="TestCo", document_type=DocumentType.CATALOGUE,
+            filename="test.pdf",
+        )
+        product = pipeline._extracted_to_hydraulic(ep, metadata)
+        assert product.spool_type == "2A"
+        assert product.extra_specs is not None
+        assert "_spool_function" in product.extra_specs
+        assert product.extra_specs["_spool_function"]["center_condition"] == "All ports blocked"
+
+    def test_no_extra_specs_when_all_known(self, pipeline):
+        """If all specs match known fields, extra_specs should be empty/None."""
+        ep = ExtractedProduct(
+            model_code="TEST-003",
+            specs={"max_pressure_bar": 315, "spool_type": "2A"},
+        )
+        metadata = UploadMetadata(
+            company="TestCo", document_type=DocumentType.CATALOGUE,
+            filename="test.pdf",
+        )
+        product = pipeline._extracted_to_hydraulic(ep, metadata)
+        # extra_specs should be None or empty dict
+        assert not product.extra_specs or product.extra_specs == {}
+
+    def test_apply_decoded_unknown_key_to_extra_specs(self, pipeline):
+        """Unknown decoded keys should go to extra_specs, not be dropped."""
+        product = HydraulicProduct(
+            id="test", company="TestCo", model_code="X",
+        )
+        decoded = {"unknown_field_xyz": "some_value"}
+        pipeline._apply_decoded_specs(product, decoded)
+        assert product.extra_specs is not None
+        assert product.extra_specs.get("unknown_field_xyz") == "some_value"

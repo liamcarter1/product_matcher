@@ -30,6 +30,7 @@ class ProductDB:
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._create_tables()
+        self._migrate_schema()
 
     def _create_tables(self):
         cursor = self.conn.cursor()
@@ -67,6 +68,7 @@ class ProductDB:
                 bore_diameter_mm REAL,
                 rod_diameter_mm REAL,
                 stroke_mm REAL,
+                extra_specs TEXT DEFAULT '{}',
                 description TEXT DEFAULT '',
                 source_document TEXT DEFAULT '',
                 raw_text TEXT DEFAULT '',
@@ -123,6 +125,17 @@ class ProductDB:
         """)
         self.conn.commit()
 
+    def _migrate_schema(self):
+        """Add columns that may be missing in older databases. Safe and idempotent."""
+        cursor = self.conn.execute("PRAGMA table_info(products)")
+        existing_columns = {row[1] for row in cursor.fetchall()}
+
+        if "extra_specs" not in existing_columns:
+            self.conn.execute(
+                "ALTER TABLE products ADD COLUMN extra_specs TEXT DEFAULT '{}'"
+            )
+            self.conn.commit()
+
     # ── Product CRUD ──────────────────────────────────────────────────
 
     def insert_product(self, product: HydraulicProduct) -> str:
@@ -140,6 +153,7 @@ class ProductDB:
                     operating_temp_min_c, operating_temp_max_c, fluid_type,
                     viscosity_range_cst, weight_kg, displacement_cc,
                     speed_rpm_max, bore_diameter_mm, rod_diameter_mm, stroke_mm,
+                    extra_specs,
                     description, source_document, raw_text, model_code_decoded
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?,
@@ -150,6 +164,7 @@ class ProductDB:
                     ?, ?, ?,
                     ?, ?, ?,
                     ?, ?, ?, ?,
+                    ?,
                     ?, ?, ?, ?
                 )
             """, (
@@ -168,6 +183,7 @@ class ProductDB:
                 product.weight_kg, product.displacement_cc,
                 product.speed_rpm_max, product.bore_diameter_mm,
                 product.rod_diameter_mm, product.stroke_mm,
+                json.dumps(product.extra_specs) if product.extra_specs else '{}',
                 product.description, product.source_document, product.raw_text,
                 json.dumps(product.model_code_decoded) if product.model_code_decoded else None,
             ))
@@ -498,9 +514,18 @@ class ProductDB:
         breakdown.coil_voltage_match = self._exact_match(
             competitor.coil_voltage, candidate.coil_voltage
         )
-        breakdown.spool_function_match = self._exact_match(
+        # Spool function match — prefer canonical pattern if available
+        spool_score = self._exact_match(
             competitor.spool_type, candidate.spool_type
         )
+        # Upgrade: if both have canonical spool patterns, use those for matching
+        comp_spool_fn = (competitor.extra_specs or {}).get("_spool_function", {})
+        cand_spool_fn = (candidate.extra_specs or {}).get("_spool_function", {})
+        comp_pattern = comp_spool_fn.get("canonical_pattern") if isinstance(comp_spool_fn, dict) else None
+        cand_pattern = cand_spool_fn.get("canonical_pattern") if isinstance(cand_spool_fn, dict) else None
+        if comp_pattern and cand_pattern:
+            spool_score = 1.0 if comp_pattern == cand_pattern else 0.0
+        breakdown.spool_function_match = spool_score
 
         # Physical
         breakdown.port_match = self._exact_match(
@@ -529,7 +554,7 @@ class ProductDB:
         # Semantic similarity
         breakdown.semantic_similarity = semantic_score
 
-        # Spec coverage
+        # Spec coverage (includes extra_specs common keys)
         total_specs = 0
         covered_specs = 0
         for field in SPEC_FIELDS:
@@ -539,6 +564,18 @@ class ProductDB:
                 total_specs += 1
                 if comp_val is not None and cand_val is not None:
                     covered_specs += 1
+
+        # Bonus: count matching extra_specs keys (exclude _ prefixed internal keys)
+        comp_extra = {k: v for k, v in (competitor.extra_specs or {}).items()
+                      if not k.startswith("_")}
+        cand_extra = {k: v for k, v in (candidate.extra_specs or {}).items()
+                      if not k.startswith("_")}
+        common_extra_keys = set(comp_extra.keys()) & set(cand_extra.keys())
+        for key in common_extra_keys:
+            total_specs += 1
+            if str(comp_extra[key]).strip().lower() == str(cand_extra[key]).strip().lower():
+                covered_specs += 1
+
         breakdown.spec_coverage = covered_specs / max(total_specs, 1)
 
         # Calculate weighted confidence score
@@ -631,6 +668,17 @@ class ProductDB:
                 d["model_code_decoded"] = None
         else:
             d["model_code_decoded"] = decoded
+
+        # Deserialize extra_specs from JSON
+        extra_raw = d.pop("extra_specs", None)
+        if extra_raw and isinstance(extra_raw, str):
+            try:
+                d["extra_specs"] = json.loads(extra_raw)
+            except json.JSONDecodeError:
+                d["extra_specs"] = {}
+        else:
+            d["extra_specs"] = extra_raw if isinstance(extra_raw, dict) else {}
+
         return HydraulicProduct(**d)
 
     def close(self):

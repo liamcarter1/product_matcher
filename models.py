@@ -82,6 +82,9 @@ class HydraulicProduct(BaseModel):
     rod_diameter_mm: Optional[float] = None
     stroke_mm: Optional[float] = None
 
+    # Dynamic overflow — stores ALL specs beyond the known fields above
+    extra_specs: Optional[dict] = None
+
     # Raw data
     description: str = ""
     source_document: str = ""

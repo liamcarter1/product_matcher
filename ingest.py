@@ -20,6 +20,7 @@ from tools.parse_tools import (
     extract_model_code_patterns_with_llm,
     extract_ordering_code_with_llm,
     generate_products_from_ordering_code,
+    analyze_spool_functions,
 )
 from storage.product_db import ProductDB
 from storage.vector_store import VectorStore
@@ -178,6 +179,48 @@ class IngestionPipeline:
                                     print(f"Error storing ordering code pattern: {e}")
             except Exception as e:
                 print(f"Error in ordering code extraction: {e}")
+
+        # Step 5b: Deep spool function analysis (second-pass LLM)
+        # Analyse the full user guide text to understand spool symbols and functions
+        if full_text and metadata.document_type in (DocumentType.USER_GUIDE, DocumentType.DATASHEET):
+            try:
+                spool_results = analyze_spool_functions(full_text, metadata.company)
+                if spool_results:
+                    # Build lookup: spool_code -> structured data
+                    spool_lookup = {}
+                    for sr in spool_results:
+                        code = sr.get("spool_code", "").strip()
+                        if code:
+                            spool_lookup[code.upper()] = sr
+                            # Also store without leading zeros etc.
+                            spool_lookup[code.upper().lstrip("0")] = sr
+
+                    # Merge spool function data into matching extracted products
+                    for product in extracted_products:
+                        spool = product.specs.get("spool_type", "")
+                        if not spool:
+                            continue
+                        spool_upper = str(spool).strip().upper()
+                        matched_spool = spool_lookup.get(spool_upper)
+                        if not matched_spool:
+                            # Try partial match (e.g. product spool "2A" in "type 2A")
+                            for code, data in spool_lookup.items():
+                                if code in spool_upper or spool_upper in code:
+                                    matched_spool = data
+                                    break
+                        if matched_spool:
+                            if not product.specs.get("_spool_function"):
+                                product.specs["_spool_function"] = {
+                                    "center_condition": matched_spool.get("center_condition", ""),
+                                    "solenoid_a_function": matched_spool.get("solenoid_a_function", ""),
+                                    "solenoid_b_function": matched_spool.get("solenoid_b_function", ""),
+                                    "description": matched_spool.get("description", ""),
+                                    "canonical_pattern": matched_spool.get("canonical_pattern", ""),
+                                }
+                    print(f"Spool analysis: found {len(spool_results)} spool types, "
+                          f"merged into products")
+            except Exception as e:
+                print(f"Error in spool function analysis: {e}")
 
         # Step 6: Deduplicate by model_code (keep the one with more specs)
         extracted_products = self._deduplicate_products(extracted_products)
@@ -355,6 +398,21 @@ class IngestionPipeline:
             source_document=metadata.filename,
             raw_text=ep.raw_text,
         )
+
+        # Collect leftover specs into extra_specs (these didn't match any known field)
+        leftover = {
+            k: v for k, v in specs.items()
+            if v is not None and v != ""
+            and not k.startswith("_")
+        }
+        # Also collect _ prefixed structured data (e.g. _spool_function)
+        structured = {
+            k: v for k, v in specs.items()
+            if k.startswith("_") and v is not None and v != ""
+        }
+        if leftover or structured:
+            product.extra_specs = {**(product.extra_specs or {}), **leftover, **structured}
+
         return product
 
     def _apply_decoded_specs(self, product: HydraulicProduct, decoded: dict):
@@ -377,6 +435,11 @@ class IngestionPipeline:
                 target_field = _FIELD_ALIASES.get(target_field.lower(), target_field)
 
             if target_field not in _ALL_SPEC_FIELDS:
+                # Store in extra_specs instead of discarding
+                if product.extra_specs is None:
+                    product.extra_specs = {}
+                if value is not None and value != "":
+                    product.extra_specs[target_field] = str(value) if value else None
                 continue
 
             # Only fill if currently None
