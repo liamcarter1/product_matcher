@@ -355,7 +355,16 @@ Extract ALL products mentioned in the following text. For each product, extract:
 - max_pressure_bar: maximum operating pressure in bar (number only)
 - max_flow_lpm: maximum flow rate in litres per minute (number only)
 - valve_size: e.g. "CETOP 3", "CETOP 5", "NG6", "NG10"
-- spool_type: spool/function designation
+- spool_type: CRITICAL FIELD. The spool/function designation code AND its center condition description.
+  This defines which ports are connected in each valve position (especially the center/neutral position).
+  Include both the manufacturer's code and the functional description. Examples:
+  "2A (all ports open to tank in center)", "D (P blocked, A&B to T)", "E (P&T blocked, A&B open)",
+  "H (all ports blocked)", "J (P to A&B, T blocked)", "33C (tandem center, P to T, A&B blocked)".
+  Look for spool designation tables, schematic symbols showing flow paths, and center condition descriptions.
+  For Danfoss/Vickers: codes like 0A, 2A, 6C, 23, 33C, 36, etc.
+  For Bosch Rexroth: codes like D, E, EA, H, J, L, M, R, U, W, etc.
+  For Parker: codes like 01, 02, 06, 11, 20, 30, etc.
+  For MOOG: letter/number codes in the model string.
 - num_positions: number of switching positions (e.g. 2, 3)
 - num_ports: number of ports/ways (e.g. 2, 3, 4)
 - actuator_type: solenoid, manual, pilot, proportional
@@ -436,6 +445,23 @@ Many hydraulic manufacturers include a section showing what each part of a model
   Where: 4WE6 = Series (4-way 6mm), D = Spool type, 6X = Size, EG24 = 24VDC coil, N9K4 = Design/seals
 
 Extract ALL model code segment definitions from the following text for company: {company}
+
+SPOOL TYPE EXTRACTION IS CRITICAL:
+The spool type segment defines the valve's flow path configuration (which ports connect in each switching position).
+This is THE most important spec for cross-referencing between manufacturers. Look carefully for:
+- Spool designation tables showing codes and their center condition (e.g., "D = P blocked, A&B to T")
+- Schematic symbol descriptions near valve function diagrams
+- "Spool type", "Function", "Center condition", "Neutral position" sections
+Each spool code corresponds to a specific port connection pattern:
+  - All ports blocked (closed center)
+  - All ports open to tank (open center)
+  - P blocked, A&B to T (float center)
+  - P to A&B, T blocked
+  - P to T, A&B blocked (tandem center)
+  ...and many manufacturer-specific variations.
+Always map spool/function segments to maps_to_field: "spool_type".
+The decoded_value MUST describe the flow path function, e.g.:
+"2A - All ports open to tank in center" or "D - P blocked, A&B connected to T"
 
 For each segment definition, provide:
 - series: the base series name (e.g. "4WE6", "D1VW", "DHI")
@@ -561,12 +587,40 @@ For EACH ordering code table, return:
 6. "shared_specs": object with any specifications that apply to ALL variants from this table (e.g. {{"max_pressure_bar": 315}}).
    Extract these from the document text around the ordering code table.
 
+SPOOL TYPE / VALVE FUNCTION SEGMENT — CRITICAL:
+The spool type (also called valve function, spool code, or center condition) is one of the most important
+segments in a directional valve ordering code. It defines how ports connect in each valve position.
+You MUST map this segment to maps_to_field: "spool_type".
+
+Spool type codes vary by manufacturer:
+- Danfoss/Vickers: letter codes like "D", "E", "H", "J", "K", "L", "M", "S", "T", "W", or compound
+  codes like "2A", "2B", "6C", "7C", "8C", "33C", "34C", "60B". These appear in model codes such as
+  D1VW001CNJW (where "C" is the spool type segment) or DG4V-3-2A-M-... (where "2A" is the spool).
+- Bosch Rexroth: letter codes like "D", "E", "EA", "H", "J", "L", "R", "U", "W" in model codes
+  such as 4WE6-D6X/... or 4WE10-E3X/... (the letter after the size number is the spool type).
+- Parker: numeric codes like "01", "02", "06", "11", "12", "20", "30", "60", "70".
+- MOOG: letter codes embedded in the model number.
+
+The maps_to_value for spool type should include BOTH the code AND a functional description, e.g.:
+  "D - P to A, B to T" or "2A - All ports open to tank in center" or "H - P blocked, A&B to T"
+This functional description is essential for cross-referencing equivalent spools between manufacturers.
+
+Common center condition functions to recognize:
+- All ports blocked (closed center)
+- All ports open to tank (open center / tandem)
+- P blocked, A&B to T (float center)
+- P to A, B to T (motor/directional)
+- P to B, A to T (reverse directional)
+- P to A&B, T blocked (regenerative)
+- A&B blocked, P to T (unloading)
+
 CRITICAL RULES:
 - Include ALL positions, both fixed and variable
 - For "no code" options (where nothing appears in the model code), set "code" to "" (empty string)
 - Skip positions marked as "free text" or "further details" — do not include them
 - maps_to_value for coil_voltage must be a string like "24VDC", not a bare number
 - maps_to_value for numeric fields (max_flow_lpm, max_pressure_bar, etc.) must be a number
+- Spool type/valve function segments MUST use maps_to_field: "spool_type"
 
 Return a JSON object: {{"ordering_codes": [...]}}
 If no ordering code tables found, return {{"ordering_codes": []}}

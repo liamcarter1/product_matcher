@@ -195,6 +195,8 @@ The system also stores model code decode patterns in the `model_code_patterns` t
 
 **Generation is capped at 500 products per ordering code table** to prevent combinatorial explosion. If the cap is hit, the admin is warned in the status message.
 
+**Spool type extraction:** The system now includes specialised hydraulic engineering guidance for extracting spool type designations from ordering code tables and model code breakdowns. Spool types define the valve's center condition (e.g. all ports blocked, all ports open to tank, P blocked with A&B to T). The extraction prompt recognises manufacturer-specific codes: Danfoss/Vickers (2A, 33C, 6C, etc.), Bosch Rexroth (D, E, H, J, etc.), Parker (01, 02, 06, etc.), and MOOG. Each spool code is stored with both the code and its functional description (e.g. "2A - All ports open to tank in center"), enabling cross-manufacturer matching based on equivalent valve function.
+
 **Tip:** Upload datasheets and user guides (which contain ordering code tables) BEFORE plain catalogues. This both generates the richest product data and populates decode patterns for future enrichment.
 
 #### Common Upload Scenarios
@@ -445,7 +447,7 @@ The confidence score (0-100%) represents how closely a candidate product matches
 | Max Flow | 10% | Numerical | How close the flow ratings are |
 | Valve Size | 10% | Fuzzy | CETOP/NG size (tolerates formatting differences like "CETOP 5" vs "CETOP 05") |
 | Coil Voltage | 10% | Fuzzy | "24VDC" matches "24 VDC"; "110VAC" matches "110 VAC" |
-| Spool Function | 8% | Fuzzy | Valve spool type/function code |
+| Spool Function | 8% | Fuzzy | Valve spool type/function code and center condition (e.g. "2A - All ports open to tank") |
 | Actuator Type | 8% | Fuzzy | "proportional_solenoid" matches "proportional solenoid" |
 | Mounting | 8% | Fuzzy | Mounting pattern (e.g. "ISO 4401-05" matches "ISO4401-05") |
 | Port Size | 6% | Fuzzy | Port size and thread type |
@@ -601,6 +603,74 @@ Since the database starts empty on a fresh deployment, you need to populate it f
 - **Storage:** Data files persist during the Space's lifetime but are lost on rebuild
 - **Resources:** Free-tier Spaces have limited CPU/RAM. The sentence-transformers models may be slow on first load
 - **File uploads:** PDFs are uploaded through Gradio's file handling, which works the same as locally
+
+---
+
+## 8. Deploying with Docker (VPS)
+
+ProductMatchPro can be deployed to a VPS using Docker. A `Dockerfile`, `docker-compose.yml`, and Nginx config are included.
+
+### Prerequisites
+
+- A VPS with Docker and Nginx installed
+- SSH access to the VPS
+- A domain/subdomain pointed at the VPS IP
+
+### Deployment Steps
+
+1. **Zip and transfer the project** from your local machine:
+   ```powershell
+   # On Windows (PowerShell)
+   Compress-Archive -Path * -DestinationPath productmatchpro.zip -Force
+   scp productmatchpro.zip root@YOUR_VPS_IP:/opt/productmatchpro/
+   ```
+
+2. **Extract and build on the VPS:**
+   ```bash
+   cd /opt/productmatchpro
+   unzip -o productmatchpro.zip
+   docker compose up -d --build
+   ```
+
+3. **Configure Nginx** (copy from `deploy/nginx-match.conf`):
+   ```bash
+   cp deploy/nginx-match.conf /etc/nginx/sites-available/match.conf
+   ln -sf /etc/nginx/sites-available/match.conf /etc/nginx/sites-enabled/
+   nginx -t && systemctl reload nginx
+   ```
+
+4. **Get an SSL certificate:**
+   ```bash
+   certbot --nginx -d your-subdomain.example.com
+   ```
+
+### Redeployment Workflow
+
+After making local code changes:
+
+```bash
+# 1. Zip the project
+Compress-Archive -Path * -DestinationPath productmatchpro.zip -Force
+
+# 2. Transfer to VPS
+scp productmatchpro.zip root@YOUR_VPS_IP:/tmp/
+
+# 3. SSH in and rebuild
+ssh root@YOUR_VPS_IP
+cd /opt/productmatchpro
+unzip -o /tmp/productmatchpro.zip
+docker compose up -d --build
+```
+
+The Docker build caches pip install layers, so rebuilds after code-only changes take seconds.
+
+### Running Tests
+
+```bash
+python -m pytest tests/ -v
+```
+
+The test suite covers 156 tests across ingestion (type coercion, field aliases, deduplication), PDF parsing (ordering code generation, model code assembly, LLM prompt validation), and storage (CRUD, spec comparison, fuzzy lookup, model code decoding).
 
 ---
 

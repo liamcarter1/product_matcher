@@ -21,6 +21,7 @@ A RAG-powered application for cross-referencing competitor hydraulic products ag
 - **Admin Console** - Upload PDF catalogues and user guides, manage products, review feedback
 - **Comprehensive PDF Extraction** - PyMuPDF (fitz) primary extractor with pdfplumber supplementary pass captures ALL pages including complex layouts, operating data tables, and technical specifications. Full-document LLM processing in batches (no truncation)
 - **Ordering Code Generation** - Automatically reads "How to Order" tables from datasheets and generates ALL product variants as separate database entries with fully populated specs
+- **Spool Type Cross-Referencing** - Extracts spool/function designations with center condition descriptions from user guides and ordering codes, enabling cross-manufacturer matching (e.g. Danfoss "2A" ≈ Bosch Rexroth "D" — both P-to-A, B-to-T)
 - **Smart Matching** - 12-dimension weighted scoring with fuzzy string tolerance (e.g. "24VDC" matches "24 VDC") and DB fallback when vector store is empty
 - **Fuzzy Model Code Lookup** - Partial codes accepted (e.g. "4WE6" finds "4WE6D6X/EG24N9K4")
 - **75% Confidence Threshold** - Below threshold directs distributors to contact their sales representative
@@ -85,6 +86,24 @@ See `CLAUDE.md` for the full list of host/port configuration variables.
 - **Numpy-based vector store** with sentence-transformers embeddings + cross-encoder reranking
 - **SQLite** for structured product data, model code patterns, confirmed equivalents, and feedback
 - **Gradio** for both the distributor and admin interfaces
+
+## Docker Deployment
+
+A `Dockerfile` and `docker-compose.yml` are included for VPS deployment:
+
+```bash
+docker compose up -d --build
+```
+
+The app runs on port 7860 behind Nginx. See `deploy/nginx-match.conf` for the reverse proxy config with WebSocket support (required for Gradio).
+
+## Testing
+
+Run the test suite (156 tests covering ingestion, parsing, and storage):
+
+```bash
+python -m pytest tests/ -v
+```
 
 ## Security
 

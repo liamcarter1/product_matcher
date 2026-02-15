@@ -322,29 +322,29 @@ class IngestionPipeline:
             id=str(uuid.uuid4()),
             company=metadata.company,
             model_code=ep.model_code,
-            product_name=ep.product_name or specs.pop("product_name", ""),
+            product_name=str(ep.product_name) if ep.product_name else specs.pop("product_name", ""),
             category=ep.category or metadata.category or "",
-            subcategory=specs.pop("subcategory", None),
+            subcategory=self._safe_str(specs.pop("subcategory", None)),
             max_pressure_bar=self._safe_float(specs.pop("max_pressure_bar", None)),
             max_flow_lpm=self._safe_float(specs.pop("max_flow_lpm", None)),
-            valve_size=specs.pop("valve_size", None),
-            spool_type=specs.pop("spool_type", None),
+            valve_size=self._safe_str(specs.pop("valve_size", None)),
+            spool_type=self._safe_str(specs.pop("spool_type", None)),
             num_positions=self._safe_int(specs.pop("num_positions", None)),
             num_ports=self._safe_int(specs.pop("num_ports", None)),
-            actuator_type=specs.pop("actuator_type", None),
-            coil_voltage=specs.pop("coil_voltage", None),
-            coil_type=specs.pop("coil_type", None),
-            coil_connector=specs.pop("coil_connector", None),
-            port_size=specs.pop("port_size", None),
-            port_type=specs.pop("port_type", None),
-            mounting=specs.pop("mounting", None),
-            mounting_pattern=specs.pop("mounting_pattern", None),
-            body_material=specs.pop("body_material", None),
-            seal_material=specs.pop("seal_material", None),
+            actuator_type=self._safe_str(specs.pop("actuator_type", None)),
+            coil_voltage=self._safe_str(specs.pop("coil_voltage", None)),
+            coil_type=self._safe_str(specs.pop("coil_type", None)),
+            coil_connector=self._safe_str(specs.pop("coil_connector", None)),
+            port_size=self._safe_str(specs.pop("port_size", None)),
+            port_type=self._safe_str(specs.pop("port_type", None)),
+            mounting=self._safe_str(specs.pop("mounting", None)),
+            mounting_pattern=self._safe_str(specs.pop("mounting_pattern", None)),
+            body_material=self._safe_str(specs.pop("body_material", None)),
+            seal_material=self._safe_str(specs.pop("seal_material", None)),
             operating_temp_min_c=self._safe_float(specs.pop("operating_temp_min_c", None)),
             operating_temp_max_c=self._safe_float(specs.pop("operating_temp_max_c", None)),
-            fluid_type=specs.pop("fluid_type", None),
-            viscosity_range_cst=specs.pop("viscosity_range_cst", None),
+            fluid_type=self._safe_str(specs.pop("fluid_type", None)),
+            viscosity_range_cst=self._safe_str(specs.pop("viscosity_range_cst", None)),
             weight_kg=self._safe_float(specs.pop("weight_kg", None)),
             displacement_cc=self._safe_float(specs.pop("displacement_cc", None)),
             speed_rpm_max=self._safe_float(specs.pop("speed_rpm_max", None)),
@@ -394,6 +394,12 @@ class IngestionPipeline:
                     setattr(product, target_field, converted)
             else:
                 setattr(product, target_field, str(value) if value else None)
+
+    @staticmethod
+    def _safe_str(val) -> Optional[str]:
+        if val is None:
+            return None
+        return str(val)
 
     @staticmethod
     def _safe_float(val) -> Optional[float]:

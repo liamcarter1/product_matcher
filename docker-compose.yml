@@ -1,0 +1,19 @@
+# ProductMatchPro - Docker Compose
+services:
+  app:
+    build: .
+    container_name: productmatchpro
+    ports:
+      - "127.0.0.1:7860:7860"
+    env_file:
+      - .env
+    volumes:
+      # Persist SQLite database and vector data
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7860/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
