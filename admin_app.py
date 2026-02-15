@@ -183,7 +183,7 @@ def process_upload(files, company, doc_type, category, pending_state):
         }
         # Add key specs
         for key in ["max_pressure_bar", "max_flow_lpm", "coil_voltage",
-                    "valve_size", "seal_material", "actuator_type",
+                    "valve_size", "spool_type", "seal_material", "actuator_type",
                     "port_size", "mounting", "num_ports"]:
             row[key] = ep.specs.get(key, "")
         rows.append(row)
@@ -290,6 +290,7 @@ def search_products(search_term, company_filter):
             "Flow (lpm)": p.max_flow_lpm or "",
             "Coil Voltage": p.coil_voltage or "",
             "Valve Size": p.valve_size or "",
+            "Spool Type": p.spool_type or "",
             "Seal": p.seal_material or "",
             "Ports": p.num_ports or "",
             "Mounting": p.mounting or "",
