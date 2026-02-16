@@ -400,6 +400,25 @@ def delete_product(product_id):
         return f"Error deleting product: {_sanitize_error(e)}"
 
 
+def delete_all_products():
+    """Delete ALL products from the database and vector store."""
+    try:
+        products = db.get_all_products()
+        if not products:
+            return "Database is already empty."
+        count = len(products)
+        for p in products:
+            db.delete_product(p.id)
+            try:
+                vs.delete_product(p.id, p.company)
+            except Exception:
+                pass  # Vector cleanup is best-effort
+        return f"Deleted all {count} products from the database."
+    except Exception as e:
+        logger.error(f"Delete all error: {e}", exc_info=True)
+        return f"Error: {_sanitize_error(e)}"
+
+
 # ── Feedback Review Tab ───────────────────────────────────────────────
 
 def get_feedback():
@@ -569,6 +588,7 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
                     max_lines=1,
                 )
                 delete_btn = gr.Button("Delete", variant="stop")
+                delete_all_btn = gr.Button("Delete ALL Products", variant="stop")
                 delete_status = gr.Textbox(label="Delete Status")
 
             db_search_btn.click(
@@ -580,6 +600,9 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
             reindex_btn.click(reindex_vectors, outputs=[reindex_status])
             delete_btn.click(
                 delete_product, inputs=[delete_id], outputs=[delete_status]
+            )
+            delete_all_btn.click(
+                delete_all_products, outputs=[delete_status]
             )
 
         # ── Feedback Review Tab ───────────────────────────────────
