@@ -4,6 +4,7 @@ Orchestrates: parse PDF → extract products → review → store in SQLite + Ch
 """
 
 import logging
+import re
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -190,8 +191,9 @@ class IngestionPipeline:
                 print(f"Error in ordering code extraction: {e}")
 
         # Step 5b: Deep spool function analysis (second-pass LLM)
-        # Analyse the full user guide text to understand spool symbols and functions
-        if full_text and metadata.document_type in (DocumentType.USER_GUIDE, DocumentType.DATASHEET):
+        # Analyse the full text to understand spool symbols and functions
+        # Runs for ALL document types — any document may contain spool info
+        if full_text:
             try:
                 spool_results = analyze_spool_functions(full_text, metadata.company)
                 if spool_results:
@@ -248,7 +250,10 @@ class IngestionPipeline:
         logger.info("Total extracted products: %d, all spec keys: %s", len(extracted_products), sorted(all_spec_keys))
         logger.info("Dynamic (non-standard) spec keys: %s", sorted(dynamic_keys))
 
-        # Step 6: Deduplicate by model_code (keep the one with more specs)
+        # Step 5c: Post-process spool_type values (safety net for LLM non-compliance)
+        self._clean_spool_types(extracted_products)
+
+        # Step 6: Deduplicate by model_code (prefer ordering_code > table > llm)
         extracted_products = self._deduplicate_products(extracted_products)
 
         # Attach metadata to all products
@@ -259,22 +264,83 @@ class IngestionPipeline:
         return extracted_products
 
     @staticmethod
+    def _clean_spool_types(products: list[ExtractedProduct]) -> None:
+        """Post-process spool_type to extract ONLY the code, move descriptions elsewhere.
+
+        Safety net that catches dirty spool_type values regardless of which
+        LLM extraction path produced them. Also detects override codes that
+        were misplaced into spool_type.
+        """
+        _OVERRIDE_KEYWORDS = {"override", "no override", "water resistant", "emergency"}
+
+        for p in products:
+            spool = p.specs.get("spool_type", "")
+            if not spool:
+                continue
+
+            # Detect override codes misplaced in spool_type
+            spool_lower = str(spool).lower()
+            if any(kw in spool_lower for kw in _OVERRIDE_KEYWORDS):
+                p.specs.setdefault("manual_override", spool)
+                p.specs["spool_type"] = ""
+                logger.info("Moved override data from spool_type: '%s'", spool)
+                continue
+
+            # Pattern: "2A (description...)" or "D - description" or "H (all ports blocked)"
+            match = re.match(
+                r'^([A-Za-z0-9]{1,5})\s*[\(\-–—]\s*(.+?)\)?\s*$',
+                str(spool),
+            )
+            if match:
+                code = match.group(1).strip()
+                description = match.group(2).strip()
+                p.specs["spool_type"] = code
+                if not p.specs.get("spool_function_description"):
+                    p.specs["spool_function_description"] = description
+                logger.info("Cleaned spool_type '%s' -> code='%s', desc='%s'",
+                            spool, code, description)
+
+    @staticmethod
     def _deduplicate_products(products: list[ExtractedProduct]) -> list[ExtractedProduct]:
-        """Deduplicate by model_code, keeping the product with the most populated specs."""
-        seen = {}
+        """Deduplicate by model_code.
+
+        Priority: ordering_code > table > llm.
+        When a higher-priority product wins, it merges useful specs from the
+        lower-priority one so no data is lost.
+        """
+        SOURCE_PRIORITY = {"ordering_code": 3, "table": 2, "llm": 1}
+        seen: dict[str, ExtractedProduct] = {}
+
         for p in products:
             key = p.model_code.upper().strip()
-            if key in seen:
-                existing = seen[key]
-                # Keep the one with more non-empty spec fields
+            if key not in seen:
+                seen[key] = p
+                continue
+
+            existing = seen[key]
+            existing_pri = SOURCE_PRIORITY.get(getattr(existing, "source", "llm"), 1)
+            new_pri = SOURCE_PRIORITY.get(getattr(p, "source", "llm"), 1)
+
+            if new_pri > existing_pri:
+                # New product has higher priority — keep it, merge specs from old
+                for k, v in existing.specs.items():
+                    if v is not None and v != "" and not p.specs.get(k):
+                        p.specs[k] = v
+                seen[key] = p
+            elif new_pri < existing_pri:
+                # Existing has higher priority — merge specs from new into existing
+                for k, v in p.specs.items():
+                    if v is not None and v != "" and not existing.specs.get(k):
+                        existing.specs[k] = v
+            else:
+                # Same priority: keep the one with more non-empty spec fields
                 existing_count = sum(1 for v in existing.specs.values()
                                      if v is not None and v != "")
                 new_count = sum(1 for v in p.specs.values()
                                 if v is not None and v != "")
                 if new_count > existing_count:
                     seen[key] = p
-            else:
-                seen[key] = p
+
         return list(seen.values())
 
     def confirm_and_store(

@@ -17,6 +17,11 @@ import json
 
 logger = logging.getLogger(__name__)
 
+# Model used for structured extraction tasks (ordering codes, spool analysis, product extraction).
+# GPT-4.1-mini has significantly better instruction-following than GPT-4o-mini,
+# critical for correctly mapping ordering code segments to named fields.
+EXTRACTION_MODEL = "gpt-4.1-mini"
+
 # PyMuPDF (fitz) for high-quality text extraction — optional fallback to pypdf
 try:
     import fitz as _fitz  # PyMuPDF
@@ -355,16 +360,20 @@ Extract ALL products mentioned in the following text. For each product, extract:
 - max_pressure_bar: maximum operating pressure in bar (number only)
 - max_flow_lpm: maximum flow rate in litres per minute (number only)
 - valve_size: e.g. "CETOP 3", "CETOP 5", "NG6", "NG10"
-- spool_type: CRITICAL FIELD. The spool/function designation code AND its center condition description.
-  This defines which ports are connected in each valve position (especially the center/neutral position).
-  Include both the manufacturer's code and the functional description. Examples:
-  "2A (all ports open to tank in center)", "D (P blocked, A&B to T)", "E (P&T blocked, A&B open)",
-  "H (all ports blocked)", "J (P to A&B, T blocked)", "33C (tandem center, P to T, A&B blocked)".
-  Look for spool designation tables, schematic symbols showing flow paths, and center condition descriptions.
+- spool_type: The spool/valve function designation CODE ONLY — just the short alphanumeric code.
+  Examples of CORRECT spool_type values: "D", "2A", "H", "01", "2C", "6C", "33C", "E", "J".
+  Do NOT include descriptions — just the manufacturer's code letter/number.
   For Danfoss/Vickers: codes like 0A, 2A, 6C, 23, 33C, 36, etc.
   For Bosch Rexroth: codes like D, E, EA, H, J, L, M, R, U, W, etc.
   For Parker: codes like 01, 02, 06, 11, 20, 30, etc.
   For MOOG: letter/number codes in the model string.
+- spool_function_description: the functional description of the spool type's center condition.
+  Examples: "All ports blocked", "P to A, B to T", "Float - A&B to T, P blocked".
+  This is SEPARATE from spool_type — do NOT combine them.
+- manual_override: override option code and description if present.
+  Examples: "Z - No overrides", "H - Water resistant", "Blank - No override".
+  CRITICAL: Do NOT confuse manual override options with spool type codes.
+  If a code means "No overrides" or "water resistant override", it is NOT a spool type.
 - num_positions: number of switching positions (e.g. 2, 3)
 - num_ports: number of ports/ways (e.g. 2, 3, 4)
 - actuator_type: solenoid, manual, pilot, proportional
@@ -407,7 +416,7 @@ Text:
 
     try:
         response = _get_client().chat.completions.create(
-            model="gpt-4o-mini",
+            model=EXTRACTION_MODEL,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             temperature=0.1,
@@ -484,7 +493,7 @@ Text:
 
     try:
         response = _get_client().chat.completions.create(
-            model="gpt-4o-mini",
+            model=EXTRACTION_MODEL,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             temperature=0.1,
@@ -646,7 +655,7 @@ Text:
 
     try:
         response = _get_client().chat.completions.create(
-            model="gpt-4o-mini",
+            model=EXTRACTION_MODEL,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             temperature=0.1,
@@ -969,7 +978,7 @@ DOCUMENT TEXT:
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=EXTRACTION_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
             response_format={"type": "json_object"},

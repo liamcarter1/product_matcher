@@ -525,3 +525,115 @@ class TestExtraSpecsPreservation:
         pipeline._apply_decoded_specs(product, decoded)
         assert product.extra_specs is not None
         assert product.extra_specs.get("unknown_field_xyz") == "some_value"
+
+
+# ── _clean_spool_types ───────────────────────────────────────────────
+
+
+class TestCleanSpoolTypes:
+    """Tests for the spool_type post-processing safety net."""
+
+    def test_strips_description_from_spool_type(self):
+        """'2 (Closed center, P port closed)' → spool_type='2', description extracted."""
+        p = ExtractedProduct(
+            model_code="X",
+            specs={"spool_type": "2 (Closed center, P port closed, A & B to tank)"},
+        )
+        IngestionPipeline._clean_spool_types([p])
+        assert p.specs["spool_type"] == "2"
+        assert "Closed center" in p.specs.get("spool_function_description", "")
+
+    def test_strips_description_with_dash(self):
+        """'D - P to A, B to T' → spool_type='D'."""
+        p = ExtractedProduct(
+            model_code="X",
+            specs={"spool_type": "D - P to A, B to T"},
+        )
+        IngestionPipeline._clean_spool_types([p])
+        assert p.specs["spool_type"] == "D"
+        assert "P to A" in p.specs.get("spool_function_description", "")
+
+    def test_clean_spool_code_left_alone(self):
+        """'2A' stays as '2A' — no change needed."""
+        p = ExtractedProduct(
+            model_code="X",
+            specs={"spool_type": "2A"},
+        )
+        IngestionPipeline._clean_spool_types([p])
+        assert p.specs["spool_type"] == "2A"
+
+    def test_override_moved_from_spool_type(self):
+        """'Z - No overrides' should be moved to manual_override."""
+        p = ExtractedProduct(
+            model_code="X",
+            specs={"spool_type": "Z - No overrides"},
+        )
+        IngestionPipeline._clean_spool_types([p])
+        assert p.specs["spool_type"] == ""
+        assert p.specs["manual_override"] == "Z - No overrides"
+
+    def test_h_all_ports_blocked_cleaned(self):
+        """'H (all ports blocked)' → spool_type='H'."""
+        p = ExtractedProduct(
+            model_code="X",
+            specs={"spool_type": "H (all ports blocked)"},
+        )
+        IngestionPipeline._clean_spool_types([p])
+        assert p.specs["spool_type"] == "H"
+        assert "all ports blocked" in p.specs.get("spool_function_description", "")
+
+    def test_does_not_overwrite_existing_description(self):
+        """If spool_function_description already exists, don't overwrite it."""
+        p = ExtractedProduct(
+            model_code="X",
+            specs={
+                "spool_type": "2A (Open center)",
+                "spool_function_description": "Existing description",
+            },
+        )
+        IngestionPipeline._clean_spool_types([p])
+        assert p.specs["spool_type"] == "2A"
+        assert p.specs["spool_function_description"] == "Existing description"
+
+
+# ── Deduplication source priority ────────────────────────────────────
+
+
+class TestDeduplicationSourcePriority:
+    """Tests for source-priority-aware deduplication."""
+
+    def test_ordering_code_wins_over_llm(self):
+        """ordering_code source should be preferred over llm source."""
+        llm_product = ExtractedProduct(
+            model_code="DG4V-3-2A",
+            specs={"spool_type": "2A (description)", "max_pressure_bar": 315},
+            source="llm",
+        )
+        oc_product = ExtractedProduct(
+            model_code="DG4V-3-2A",
+            specs={"spool_type": "2A"},
+            source="ordering_code",
+        )
+        result = IngestionPipeline._deduplicate_products([llm_product, oc_product])
+        assert len(result) == 1
+        # ordering_code should win
+        assert result[0].source == "ordering_code"
+        # But should merge specs from LLM
+        assert result[0].specs.get("max_pressure_bar") == 315
+
+    def test_table_wins_over_llm(self):
+        """table source should be preferred over llm source."""
+        llm_p = ExtractedProduct(model_code="X", specs={"a": "1"}, source="llm")
+        table_p = ExtractedProduct(model_code="X", specs={"b": "2"}, source="table")
+        result = IngestionPipeline._deduplicate_products([llm_p, table_p])
+        assert len(result) == 1
+        assert result[0].source == "table"
+        assert result[0].specs.get("a") == "1"  # merged from LLM
+
+    def test_same_source_uses_spec_count(self):
+        """Same source: fall back to spec count."""
+        p1 = ExtractedProduct(model_code="X", specs={"a": "1"}, source="llm")
+        p2 = ExtractedProduct(model_code="X", specs={"a": "1", "b": "2"}, source="llm")
+        result = IngestionPipeline._deduplicate_products([p1, p2])
+        assert len(result) == 1
+        assert result[0].specs.get("b") == "2"
