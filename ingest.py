@@ -25,6 +25,8 @@ from tools.parse_tools import (
     extract_ordering_code_with_llm,
     generate_products_from_ordering_code,
     analyze_spool_functions,
+    extract_spool_symbols_from_pdf,
+    extract_cross_references_with_llm,
 )
 from storage.product_db import ProductDB
 from storage.vector_store import VectorStore
@@ -152,13 +154,41 @@ class IngestionPipeline:
 
         # Step 5: Ordering code combinatorial generation
         # Extract ordering code breakdown tables and generate ALL product variants
+        gapfill_warnings: list[str] = []
         if full_text:
             try:
+                # Look up known spool codes for this company to inject into the prompt
+                known_spools = self.db.get_spool_codes_for_series(
+                    metadata.category or "", metadata.company,
+                )
                 ordering_defs = extract_ordering_code_with_llm(
-                    full_text, metadata.company, metadata.category or ""
+                    full_text, metadata.company, metadata.category or "",
+                    known_spool_codes=known_spools if known_spools else None,
                 )
                 for definition in ordering_defs:
-                    generated = generate_products_from_ordering_code(definition, metadata)
+                    # Also look up spools by specific series (more precise)
+                    if definition.series and not known_spools:
+                        series_spools = self.db.get_spool_codes_for_series(
+                            definition.series, metadata.company,
+                        )
+                        if series_spools:
+                            logger.info("Found %d known spool codes for series %s",
+                                        len(series_spools), definition.series)
+
+                    # Look up primary (main runner) spool codes for this series
+                    primary_spools = self.db.get_primary_spool_codes(
+                        definition.series, metadata.company,
+                    )
+                    if primary_spools:
+                        logger.info(
+                            "Primary spool filter active for %s: %d codes: %s",
+                            definition.series, len(primary_spools), primary_spools,
+                        )
+
+                    generated = generate_products_from_ordering_code(
+                        definition, metadata,
+                        primary_spool_codes=primary_spools if primary_spools else None,
+                    )
                     if generated:
                         print(f"Generated {len(generated)} products from ordering code "
                               f"table for series: {definition.series}")
@@ -187,6 +217,13 @@ class IngestionPipeline:
                                         self.db.insert_model_code_pattern(pattern)
                                 except Exception as e:
                                     print(f"Error storing ordering code pattern: {e}")
+
+                    # Step 5a: Validate spool options against reference & gap-fill
+                    warnings = self._validate_and_gapfill_spools(
+                        definition, metadata, extracted_products,
+                    )
+                    gapfill_warnings.extend(warnings)
+
             except Exception as e:
                 print(f"Error in ordering code extraction: {e}")
 
@@ -240,6 +277,57 @@ class IngestionPipeline:
             except Exception as e:
                 print(f"Error in spool function analysis: {e}")
 
+        # Step 5c: Vision-based spool symbol extraction (catches graphical symbols)
+        # Spool symbols are ISO 1219 hydraulic diagrams — they're images, not text.
+        # This uses GPT-4o vision to read the actual symbol diagrams from PDF pages.
+        try:
+            vision_spools = extract_spool_symbols_from_pdf(pdf_path, metadata.company)
+            if vision_spools:
+                # Build lookup from vision results
+                vision_lookup = {}
+                for vs in vision_spools:
+                    code = vs.get("spool_code", "").strip()
+                    if code:
+                        vision_lookup[code.upper()] = vs
+                        vision_lookup[code.upper().lstrip("0")] = vs
+
+                # Merge vision spool data into products — fill gaps not covered by text analysis
+                vision_merged = 0
+                for product in extracted_products:
+                    spool = product.specs.get("spool_type", "")
+                    if not spool:
+                        continue
+                    spool_upper = str(spool).strip().upper()
+                    matched = vision_lookup.get(spool_upper)
+                    if not matched:
+                        for code, data in vision_lookup.items():
+                            if code in spool_upper or spool_upper in code:
+                                matched = data
+                                break
+                    if matched:
+                        # Vision data fills gaps — only set if text analysis didn't already
+                        if not product.specs.get("center_condition"):
+                            product.specs["center_condition"] = matched.get("center_condition", "")
+                        if not product.specs.get("solenoid_a_energised"):
+                            product.specs["solenoid_a_energised"] = matched.get("solenoid_a_function", "")
+                        if not product.specs.get("solenoid_b_energised"):
+                            product.specs["solenoid_b_energised"] = matched.get("solenoid_b_function", "")
+                        if not product.specs.get("spool_function_description"):
+                            product.specs["spool_function_description"] = matched.get("description", "")
+                        if not product.specs.get("canonical_spool_pattern"):
+                            product.specs["canonical_spool_pattern"] = matched.get("canonical_pattern", "")
+                        # Store the visual symbol description for cross-manufacturer matching
+                        if matched.get("symbol_description"):
+                            product.specs["spool_symbol_description"] = matched["symbol_description"]
+                        vision_merged += 1
+
+                logger.info("Vision spool extraction: %d symbols found, merged into %d products",
+                            len(vision_spools), vision_merged)
+                print(f"Vision spool extraction: {len(vision_spools)} symbols found, "
+                      f"merged into {vision_merged} products")
+        except Exception as e:
+            logger.warning("Vision spool extraction error (non-fatal): %s", e)
+
         # Diagnostic: log all unique spec keys across extracted products
         all_spec_keys = set()
         for p in extracted_products:
@@ -250,7 +338,7 @@ class IngestionPipeline:
         logger.info("Total extracted products: %d, all spec keys: %s", len(extracted_products), sorted(all_spec_keys))
         logger.info("Dynamic (non-standard) spec keys: %s", sorted(dynamic_keys))
 
-        # Step 5c: Post-process spool_type values (safety net for LLM non-compliance)
+        # Step 5d: Post-process spool_type values (safety net for LLM non-compliance)
         self._clean_spool_types(extracted_products)
 
         # Step 6: Deduplicate by model_code (prefer ordering_code > table > llm)
@@ -260,6 +348,9 @@ class IngestionPipeline:
         for product in extracted_products:
             if not product.category and metadata.category:
                 product.category = metadata.category
+
+        # Store gap-fill warnings for admin review UI
+        self._last_gapfill_warnings = gapfill_warnings
 
         return extracted_products
 
@@ -299,6 +390,194 @@ class IngestionPipeline:
                     p.specs["spool_function_description"] = description
                 logger.info("Cleaned spool_type '%s' -> code='%s', desc='%s'",
                             spool, code, description)
+
+    def _validate_and_gapfill_spools(
+        self,
+        definition,
+        metadata: UploadMetadata,
+        extracted_products: list[ExtractedProduct],
+    ) -> list[str]:
+        """Compare extracted spool options against the spool_type_reference table.
+
+        If the reference has spool codes not found in the extraction:
+        1. Add missing codes as synthetic options to the spool segment
+        2. Generate the missing product combinations
+        3. Mark gap-filled products with _spool_source = 'reference_gapfill'
+        4. Return warning messages for admin review UI
+        """
+        warnings: list[str] = []
+
+        # Find the spool segment
+        spool_seg = None
+        for seg in definition.segments:
+            if seg.segment_name == "spool_type":
+                spool_seg = seg
+                break
+            # Check if any option maps to spool_type
+            for opt in seg.options:
+                if opt.get("maps_to_field") == "spool_type":
+                    spool_seg = seg
+                    break
+            if spool_seg:
+                break
+
+        if not spool_seg:
+            return warnings
+
+        extracted_codes = {opt.get("code", "").upper() for opt in spool_seg.options if opt.get("code")}
+        known_codes = set(self.db.get_spool_codes_for_series(
+            definition.series, metadata.company,
+        ))
+
+        if not known_codes:
+            return warnings
+
+        missing_codes = known_codes - extracted_codes
+
+        # If primary filtering is active, only gap-fill primary spools
+        primary_codes = set(self.db.get_primary_spool_codes(
+            definition.series, metadata.company,
+        ))
+        if primary_codes:
+            missing_codes = missing_codes & primary_codes
+
+        if not missing_codes:
+            logger.info("Spool validation: all %d known codes found in extraction for %s",
+                        len(known_codes), definition.series)
+            return warnings
+
+        logger.info("Spool gap-fill: %d known codes missing from extraction for %s: %s",
+                     len(missing_codes), definition.series, sorted(missing_codes))
+
+        # Look up reference data to build synthetic options
+        refs = self.db.get_spool_type_references(definition.series, metadata.company)
+        ref_lookup = {r["spool_code"].upper(): r for r in refs}
+
+        for code in sorted(missing_codes):
+            ref = ref_lookup.get(code.upper(), {})
+            synthetic_opt = {
+                "code": code,
+                "description": ref.get("description", "Known spool type (from reference data)"),
+                "maps_to_field": "spool_type",
+                "maps_to_value": code,
+            }
+            spool_seg.options.append(synthetic_opt)
+
+        # Regenerate products for ONLY the missing spool codes
+        # Temporarily narrow the spool segment to missing codes only
+        original_options = spool_seg.options
+        spool_seg.options = [opt for opt in original_options
+                             if opt.get("code", "").upper() in missing_codes]
+
+        new_products = generate_products_from_ordering_code(definition, metadata)
+        for p in new_products:
+            p.specs["_spool_source"] = "reference_gapfill"
+
+        # Restore full options list
+        spool_seg.options = original_options
+
+        if new_products:
+            extracted_products.extend(new_products)
+            missing_str = ", ".join(sorted(missing_codes))
+            msg = (f"Gap-filled {len(new_products)} products from spool reference data "
+                   f"for series {definition.series}. Missing codes added: {missing_str}")
+            warnings.append(msg)
+            print(msg)
+
+        return warnings
+
+    def _auto_learn_spool_types(
+        self,
+        products: list[ExtractedProduct],
+        metadata: UploadMetadata,
+    ) -> int:
+        """Extract unique spool types from confirmed products and store in
+        spool_type_reference table for future extractions.
+
+        Only learns from products NOT marked as gap-filled.
+        """
+        # Group by source — infer series from ordering_code source
+        spool_data: dict[str, dict] = {}  # spool_code -> {center_condition, ...}
+
+        for p in products:
+            # Skip gap-filled products (don't learn from our own gap-fill)
+            if p.specs.get("_spool_source") == "reference_gapfill":
+                continue
+            spool_code = p.specs.get("spool_type", "").strip()
+            if not spool_code:
+                continue
+            if spool_code not in spool_data:
+                spool_data[spool_code] = {
+                    "center_condition": p.specs.get("center_condition", ""),
+                    "solenoid_a_function": p.specs.get("solenoid_a_energised", ""),
+                    "solenoid_b_function": p.specs.get("solenoid_b_energised", ""),
+                    "canonical_pattern": p.specs.get("canonical_spool_pattern", ""),
+                    "description": p.specs.get("spool_function_description", ""),
+                }
+
+        if not spool_data:
+            return 0
+
+        # Infer series from the ordering code source or model code patterns
+        series_prefix = self._infer_series_from_products(products, metadata.company)
+
+        refs = []
+        for code, data in spool_data.items():
+            refs.append({
+                "series_prefix": series_prefix,
+                "manufacturer": metadata.company,
+                "spool_code": code,
+                "description": data.get("description", ""),
+                "center_condition": data.get("center_condition", ""),
+                "solenoid_a_function": data.get("solenoid_a_function", ""),
+                "solenoid_b_function": data.get("solenoid_b_function", ""),
+                "canonical_pattern": data.get("canonical_pattern", ""),
+                "source": "auto_confirmed",
+                "source_document": metadata.filename,
+            })
+
+        count = self.db.bulk_insert_spool_type_references(refs)
+        if count:
+            logger.info("Auto-learned %d spool types for series %s from %s",
+                        count, series_prefix, metadata.filename)
+            print(f"Auto-learned {count} spool types for series {series_prefix}")
+        return count
+
+    @staticmethod
+    def _infer_series_from_products(
+        products: list[ExtractedProduct], company: str,
+    ) -> str:
+        """Infer series prefix from product model codes.
+
+        Looks at ordering_code-sourced products and finds the common prefix.
+        """
+        ordering_codes = [
+            p.model_code for p in products
+            if getattr(p, "source", "") == "ordering_code" and p.model_code
+        ]
+        if not ordering_codes:
+            ordering_codes = [p.model_code for p in products if p.model_code]
+
+        if not ordering_codes:
+            return ""
+
+        if len(ordering_codes) == 1:
+            # Single code: take everything before the last hyphen-separated segment
+            parts = ordering_codes[0].split("-")
+            if len(parts) >= 2:
+                return "-".join(parts[:2])
+            return ordering_codes[0][:6]
+
+        # Find longest common prefix across all model codes
+        prefix = ordering_codes[0]
+        for code in ordering_codes[1:]:
+            while not code.startswith(prefix) and prefix:
+                prefix = prefix[:-1]
+
+        # Trim trailing separators
+        prefix = prefix.rstrip("-/.")
+
+        return prefix if len(prefix) >= 3 else ordering_codes[0][:6]
 
     @staticmethod
     def _deduplicate_products(products: list[ExtractedProduct]) -> list[ExtractedProduct]:
@@ -347,6 +626,7 @@ class IngestionPipeline:
         self,
         extracted_products: list[ExtractedProduct],
         metadata: UploadMetadata,
+        auto_learn_spools: bool = True,
     ) -> int:
         """Confirm extracted products and store them in SQLite + ChromaDB.
         Called after admin reviews and approves the extraction."""
@@ -369,6 +649,10 @@ class IngestionPipeline:
             self.vector_store.index_product(product)
 
             stored_count += 1
+
+        # Auto-learn spool types from confirmed products
+        if auto_learn_spools and extracted_products:
+            self._auto_learn_spool_types(extracted_products, metadata)
 
         return stored_count
 
@@ -569,3 +853,55 @@ class IngestionPipeline:
             return int(float(val))
         except (ValueError, TypeError):
             return None
+
+    # ── Cross-Reference PDF Processing ────────────────────────────────
+
+    def process_cross_reference_pdf(
+        self, pdf_path: str, metadata: UploadMetadata
+    ) -> list[dict]:
+        """Process a cross-reference PDF and return extracted mappings for review.
+
+        Also indexes the document as guide text chunks for LLM context.
+        Does NOT store cross-references yet — admin must confirm first.
+        """
+        # Extract text
+        pages = extract_text_from_pdf(pdf_path)
+        full_text = "\n\n".join(p["text"] for p in pages)
+
+        if not full_text:
+            return []
+
+        # Index as guide chunks (for LLM context in KB Q&A and response generation)
+        chunk_count = self.index_guide_text(pdf_path, metadata)
+        logger.info("Cross-reference PDF indexed as %d guide chunks", chunk_count)
+
+        # Extract structured cross-reference mappings
+        cross_refs = extract_cross_references_with_llm(full_text, metadata.company)
+        logger.info("Extracted %d cross-reference mappings from %s",
+                     len(cross_refs), metadata.filename)
+
+        return cross_refs
+
+    def confirm_and_store_cross_references(
+        self,
+        cross_refs: list[dict],
+        metadata: UploadMetadata,
+    ) -> int:
+        """Store confirmed cross-reference mappings in the database."""
+        stored = 0
+        for ref in cross_refs:
+            try:
+                self.db.insert_series_cross_reference(
+                    my_company_series=ref.get("my_company_series", ""),
+                    competitor_series=ref.get("competitor_series", ""),
+                    competitor_company=ref.get("competitor_company", ""),
+                    product_type=ref.get("product_type", ""),
+                    notes=ref.get("notes", ""),
+                    source_document=metadata.filename,
+                    my_company_name=metadata.company,
+                )
+                stored += 1
+            except Exception as e:
+                logger.error("Error storing cross-reference: %s", e)
+        logger.info("Stored %d cross-reference mappings from %s", stored, metadata.filename)
+        return stored

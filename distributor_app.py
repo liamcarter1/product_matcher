@@ -15,6 +15,7 @@ from storage.product_db import ProductDB
 from storage.vector_store import VectorStore
 from graph import MatchGraph
 from tools.lookup_tools import LookupTools
+from tools.vision_extract import extract_text_from_image
 
 load_dotenv(override=True)
 
@@ -166,7 +167,8 @@ with gr.Blocks(title="Danfoss Product Finder") as distributor_ui:
     # Header
     gr.Markdown(
         "# Danfoss Product Finder\n"
-        "### Find the Danfoss equivalent for any competitor hydraulic product"
+        "### Find the Danfoss equivalent for any competitor hydraulic product\n"
+        "Type a model code below, or upload a photo of the label"
     )
 
     # Chat area
@@ -184,6 +186,16 @@ with gr.Blocks(title="Danfoss Product Finder") as distributor_ui:
                 container=False,
             )
             search_btn = gr.Button("Search", variant="primary", scale=1)
+
+        with gr.Row():
+            image_input = gr.Image(
+                label="Or upload / take a photo of the model code label",
+                sources=["upload", "webcam"],
+                type="filepath",
+                height=200,
+                scale=3,
+            )
+            image_btn = gr.Button("Read Label", variant="secondary", scale=1)
 
         with gr.Row():
             category_filter = gr.Dropdown(
@@ -231,6 +243,42 @@ with gr.Blocks(title="Danfoss Product Finder") as distributor_ui:
     def on_submit(msg, history, tid, cat, comp):
         return chat(msg, history, tid, CATEGORY_MAP.get(cat, ""), comp)
 
+    def process_image(image_path, history, tid, cat, comp):
+        """Handle an uploaded image: extract text via vision, then match."""
+        if image_path is None:
+            return history, tid, ""
+
+        result = extract_text_from_image(image_path)
+
+        if result["error"]:
+            history = history + [
+                {"role": "user", "content": "[Uploaded photo of model label]"},
+                {"role": "assistant", "content": result["error"]},
+            ]
+            return history, tid, ""
+
+        extracted = result["text"].strip()[:MAX_MESSAGE_LEN]
+
+        # Enrich with filters, same as text flow
+        enriched = extracted
+        mapped_cat = CATEGORY_MAP.get(cat, "")
+        if mapped_cat:
+            enriched += f" [category: {mapped_cat}]"
+        if comp and comp != "All":
+            enriched += f" [competitor: {comp}]"
+
+        try:
+            response = match_graph.search_sync(enriched, tid)
+        except Exception as e:
+            logger.error("Match graph error: %s", e, exc_info=True)
+            response = "Sorry, an error occurred. Please try again."
+
+        history = history + [
+            {"role": "user", "content": f"[Photo] {extracted}"},
+            {"role": "assistant", "content": response},
+        ]
+        return history, tid, extracted
+
     message.submit(
         on_submit,
         inputs=[message, chatbot, thread_id, category_filter, competitor_filter],
@@ -242,6 +290,12 @@ with gr.Blocks(title="Danfoss Product Finder") as distributor_ui:
         inputs=[message, chatbot, thread_id, category_filter, competitor_filter],
         outputs=[chatbot, thread_id],
     ).then(lambda: "", outputs=[message])
+
+    image_btn.click(
+        process_image,
+        inputs=[image_input, chatbot, thread_id, category_filter, competitor_filter],
+        outputs=[chatbot, thread_id, message],
+    ).then(lambda: None, outputs=[image_input])
 
     thumbs_up_btn.click(
         lambda h: submit_feedback(h, True),

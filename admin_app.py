@@ -135,6 +135,20 @@ def process_upload(files, company, doc_type, category, pending_state):
         )
 
         try:
+            # Branch for cross-reference documents
+            if doc_type == "cross_reference":
+                cross_refs = pipeline.process_cross_reference_pdf(file_path, metadata)
+                if cross_refs:
+                    all_extracted.extend(cross_refs)  # dicts, not ExtractedProduct
+                    file_summaries.append(
+                        f"  {metadata.filename}: {len(cross_refs)} cross-reference mappings"
+                    )
+                else:
+                    file_summaries.append(
+                        f"  {metadata.filename}: no cross-references extracted"
+                    )
+                continue
+
             extracted = pipeline.process_pdf(file_path, metadata)
             chunk_count = pipeline.index_guide_text(file_path, metadata)
             all_chunk_counts += chunk_count
@@ -155,11 +169,42 @@ def process_upload(files, company, doc_type, category, pending_state):
             )
 
     if not all_extracted:
-        summary = "No products could be extracted from any of the uploaded files.\n\n"
+        item_type = "cross-reference mappings" if doc_type == "cross_reference" else "products"
+        summary = f"No {item_type} could be extracted from any of the uploaded files.\n\n"
         summary += "File results:\n" + "\n".join(file_summaries)
         summary += "\n\nTry a different document type setting."
         return summary, None, pending_state
 
+    # ── Cross-reference branch: different pending state and review table ──
+    if doc_type == "cross_reference":
+        pending_state = {
+            "cross_references": all_extracted,  # list of dicts
+            "metadata": {
+                "company": company_name,
+                "document_type": doc_type,
+                "category": "",
+                "filename": f"{len(file_paths)} files",
+            },
+        }
+        rows = []
+        for ref in all_extracted:
+            rows.append({
+                "Danfoss Series": ref.get("my_company_series", ""),
+                "Competitor Series": ref.get("competitor_series", ""),
+                "Competitor": ref.get("competitor_company", ""),
+                "Product Type": ref.get("product_type", ""),
+                "Notes": ref.get("notes", ""),
+            })
+        df = pd.DataFrame(rows)
+        status = (
+            f"Extracted {len(all_extracted)} cross-reference mappings from {len(file_paths)} file(s).\n"
+            f"Also indexed text chunks for LLM context.\n\n"
+            f"File results:\n" + "\n".join(file_summaries) + "\n\n"
+            f"Review the mappings below and click 'Confirm & Index' to store them."
+        )
+        return status, df, pending_state
+
+    # ── Standard product extraction branch ──
     # Store pending data in gr.State (Fix #2 — session-isolated, not global)
     pending_state = {
         "extractions": [ep.model_dump() for ep in all_extracted],
@@ -207,6 +252,11 @@ def process_upload(files, company, doc_type, category, pending_state):
 
     df = pd.DataFrame(rows)
 
+    # Check for gap-fill warnings from spool reference validation
+    gapfill_warnings = getattr(pipeline, "_last_gapfill_warnings", [])
+    gapfill_count = sum(1 for ep in all_extracted
+                        if ep.specs.get("_spool_source") == "reference_gapfill")
+
     # Build source-aware status message
     source_counts = {}
     for ep in all_extracted:
@@ -232,11 +282,21 @@ def process_upload(files, company, doc_type, category, pending_state):
     else:
         dynamic_col_info = "\nNo dynamic columns found beyond standard fields.\n"
 
+    gapfill_info = ""
+    if gapfill_count:
+        gapfill_info = (
+            f"\nSpool gap-fill: {gapfill_count} products were added from the spool reference "
+            f"database (spool types known from previous extractions but not found in this document).\n"
+        )
+        for w in gapfill_warnings:
+            gapfill_info += f"  {w}\n"
+
     status = (
         f"Extracted {len(all_extracted)} products from {len(file_paths)} file(s). "
         f"Also indexed {all_chunk_counts} text chunks.\n"
         f"Sources: {', '.join(source_details)}.\n"
-        f"{dynamic_col_info}\n"
+        f"{dynamic_col_info}"
+        f"{gapfill_info}\n"
         f"File results:\n" + "\n".join(file_summaries) + "\n\n"
         f"Review the products below and click 'Confirm & Index' to add them to the database."
     )
@@ -244,10 +304,32 @@ def process_upload(files, company, doc_type, category, pending_state):
 
 
 def confirm_extraction(pending_state):
-    """Confirm the extracted products and store them.
+    """Confirm the extracted products (or cross-references) and store them.
     Uses gr.State for session isolation (Fix #2).
     Wraps in try/except for robustness (Fix #3)."""
 
+    # Cross-reference branch
+    if pending_state and pending_state.get("cross_references"):
+        try:
+            cross_refs = pending_state["cross_references"]
+            meta_dict = pending_state["metadata"]
+            metadata = UploadMetadata(
+                company=meta_dict["company"],
+                document_type=DocumentType(meta_dict["document_type"]),
+                category="",
+                filename=meta_dict.get("filename", ""),
+            )
+            count = pipeline.confirm_and_store_cross_references(cross_refs, metadata)
+            pending_state = {}
+            return f"Successfully stored {count} cross-reference mappings.", pending_state
+        except Exception as e:
+            logger.error(f"Error storing cross-references: {e}", exc_info=True)
+            return (
+                f"Error storing cross-references: {_sanitize_error(e)}. "
+                f"Your data is preserved — you can retry."
+            ), pending_state
+
+    # Standard product extraction branch
     if not pending_state or not pending_state.get("extractions"):
         return "No pending extractions to confirm. Upload a PDF first.", pending_state
 
@@ -475,6 +557,166 @@ def get_vector_counts():
     )
 
 
+# ── Spool Types Tab ──────────────────────────────────────────────────
+
+def get_spool_type_table(manufacturer_filter="All"):
+    """Load spool type references for display."""
+    if manufacturer_filter and manufacturer_filter != "All":
+        refs = db.get_spool_type_references(manufacturer=manufacturer_filter)
+    else:
+        refs = db.get_spool_type_references()
+    if not refs:
+        return pd.DataFrame(columns=[
+            "ID", "Series", "Manufacturer", "Spool Code",
+            "Description", "Center Condition", "Primary", "Source",
+        ])
+    rows = []
+    for r in refs:
+        rows.append({
+            "ID": str(r.get("id", ""))[:8],
+            "Series": r.get("series_prefix", ""),
+            "Manufacturer": r.get("manufacturer", ""),
+            "Spool Code": r.get("spool_code", ""),
+            "Description": r.get("description", ""),
+            "Center Condition": r.get("center_condition", ""),
+            "Primary": "Yes" if r.get("is_primary") else "",
+            "Source": r.get("source", ""),
+        })
+    return pd.DataFrame(rows)
+
+
+def add_spool_type_ref(series_prefix, manufacturer, spool_code, description, center_condition, is_primary):
+    """Manually add a spool type reference."""
+    if not series_prefix or not manufacturer or not spool_code:
+        return "Series prefix, manufacturer, and spool code are required.", get_spool_type_table()
+    db.insert_spool_type_reference(
+        series_prefix=series_prefix.strip()[:50],
+        manufacturer=manufacturer.strip()[:MAX_COMPANY_NAME_LEN],
+        spool_code=spool_code.strip()[:10],
+        description=(description or "").strip()[:200],
+        center_condition=(center_condition or "").strip()[:200],
+        is_primary=(is_primary == "Yes"),
+        source="manual",
+    )
+    label = f"Added spool type: {spool_code.strip()} for {manufacturer.strip()} {series_prefix.strip()}"
+    if is_primary == "Yes":
+        label += " [PRIMARY]"
+    return label, get_spool_type_table()
+
+
+def toggle_spool_primary(ref_id, set_primary):
+    """Toggle the primary flag on a spool type reference."""
+    if not ref_id:
+        return "Reference ID is required.", get_spool_type_table()
+    is_primary = set_primary == "Yes"
+    db.update_spool_type_primary(ref_id.strip(), is_primary)
+    status = "Set as primary" if is_primary else "Removed primary flag"
+    return f"{status}: {ref_id.strip()}", get_spool_type_table()
+
+
+def set_primary_spools_bulk(spool_codes_text, manufacturer_filter):
+    """Bulk set primary flag from comma-separated spool codes."""
+    if not spool_codes_text or not spool_codes_text.strip():
+        return "Enter comma-separated spool codes.", get_spool_type_table(manufacturer_filter)
+
+    codes = [c.strip() for c in spool_codes_text.split(",") if c.strip()]
+    if not codes:
+        return "No valid spool codes found.", get_spool_type_table(manufacturer_filter)
+
+    manufacturer = manufacturer_filter if manufacturer_filter != "All" else None
+    if not manufacturer:
+        return "Select a specific manufacturer first (not 'All').", get_spool_type_table(manufacturer_filter)
+
+    # Clear existing primary flags, then set the specified codes
+    db.clear_all_spools_primary(manufacturer=manufacturer)
+    db.set_all_spools_primary(manufacturer=manufacturer, spool_codes=codes)
+
+    return (
+        f"Set {len(codes)} primary spool types for {manufacturer}: {', '.join(codes)}",
+        get_spool_type_table(manufacturer_filter),
+    )
+
+
+def delete_spool_type_ref(ref_id):
+    """Delete a spool type reference by ID prefix."""
+    if not ref_id:
+        return "Reference ID is required.", get_spool_type_table()
+    db.delete_spool_type_reference(ref_id.strip())
+    return f"Deleted spool type reference: {ref_id.strip()}", get_spool_type_table()
+
+
+def import_spools_from_database(manufacturer):
+    """Scan existing products and auto-populate spool_type_reference from them."""
+    if not manufacturer:
+        return "Select a manufacturer.", get_spool_type_table()
+
+    products = db.get_all_products(company=manufacturer)
+    if not products:
+        return f"No products found for {manufacturer}.", get_spool_type_table()
+
+    series_spools: dict[str, dict[str, dict]] = {}
+    for p in products:
+        if not p.spool_type:
+            continue
+        # Infer series from model code patterns
+        series = _infer_series_from_model(p.model_code)
+        if not series:
+            continue
+        if series not in series_spools:
+            series_spools[series] = {}
+        extra = p.extra_specs or {}
+        series_spools[series][p.spool_type] = {
+            "center_condition": extra.get("center_condition", ""),
+            "solenoid_a_function": extra.get("solenoid_a_energised", ""),
+            "solenoid_b_function": extra.get("solenoid_b_energised", ""),
+            "canonical_pattern": extra.get("canonical_spool_pattern", ""),
+            "description": extra.get("spool_function_description", ""),
+        }
+
+    count = 0
+    for series, spools in series_spools.items():
+        for code, data in spools.items():
+            db.insert_spool_type_reference(
+                series_prefix=series,
+                manufacturer=manufacturer,
+                spool_code=code,
+                source="auto_extracted",
+                **data,
+            )
+            count += 1
+
+    return (
+        f"Imported {count} spool types across {len(series_spools)} series for {manufacturer}.",
+        get_spool_type_table(manufacturer),
+    )
+
+
+def _infer_series_from_model(model_code: str) -> str:
+    """Infer series prefix from a single model code.
+
+    Heuristic: take everything before the spool type code typically changes.
+    For hyphenated codes like DG4V-3-2A-M-..., take first two segments.
+    For compact codes like D1VW004CNJW, take the alpha prefix.
+    """
+    if not model_code:
+        return ""
+    code = model_code.strip()
+
+    # Hyphenated: DG4V-3-2A-M... -> DG4V-3
+    parts = code.split("-")
+    if len(parts) >= 3:
+        return "-".join(parts[:2])
+
+    # Compact: D1VW004CNJW -> D1VW (alpha prefix before digits begin)
+    import re
+    m = re.match(r'^([A-Za-z0-9]*?[A-Za-z])(?=\d{2,})', code)
+    if m:
+        return m.group(1)
+
+    # Fallback: first 6 chars
+    return code[:6]
+
+
 # ── Build Gradio UI ──────────────────────────────────────────────────
 
 def get_company_list():
@@ -517,7 +759,7 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
                     )
                     upload_doc_type = gr.Dropdown(
                         label="Document Type",
-                        choices=["catalogue", "user_guide", "datasheet"],
+                        choices=["catalogue", "user_guide", "datasheet", "cross_reference"],
                         value="catalogue",
                     )
                     upload_category = gr.Dropdown(
@@ -588,8 +830,13 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
                     max_lines=1,
                 )
                 delete_btn = gr.Button("Delete", variant="stop")
-                delete_all_btn = gr.Button("Delete ALL Products", variant="stop")
                 delete_status = gr.Textbox(label="Delete Status")
+
+            with gr.Row():
+                delete_all_btn = gr.Button(
+                    "Delete ALL Products",
+                    variant="stop",
+                )
 
             db_search_btn.click(
                 search_products,
@@ -661,6 +908,144 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
                 f"- **Confidence Threshold:** {0.75:.0%} (change in `models.py` -> `CONFIDENCE_THRESHOLD`)\n"
                 f"- **Sales Contact:** Edit `SALES_CONTACT` in `graph.py`\n"
                 f"- **Model Code Patterns:** Automatically extracted from user guide uploads"
+            )
+
+        # ── Spool Types Tab ──────────────────────────────────────────
+        with gr.Tab("Spool Types"):
+            gr.Markdown("### Known Spool Type Reference")
+            gr.Markdown(
+                "Manage known spool types per manufacturer/series. "
+                "These are used during extraction to ensure all spool options are captured. "
+                "Mark spool types as **Primary** to limit product generation to only "
+                "key variants (main runners) instead of generating all combinations."
+            )
+
+            with gr.Row():
+                spool_mfr_filter = gr.Dropdown(
+                    label="Manufacturer Filter",
+                    choices=["All"] + KNOWN_COMPANIES,
+                    value="All",
+                    allow_custom_value=True,
+                )
+                spool_refresh_btn = gr.Button("Refresh")
+
+            spool_ref_table = gr.Dataframe(
+                label="Known Spool Types",
+                value=get_spool_type_table(),
+                interactive=False,
+            )
+            spool_refresh_btn.click(
+                get_spool_type_table,
+                inputs=[spool_mfr_filter],
+                outputs=[spool_ref_table],
+            )
+
+            gr.Markdown("### Add Spool Type")
+            with gr.Row():
+                spool_series = gr.Textbox(
+                    label="Series Prefix", placeholder="e.g. DG4V-3", max_lines=1,
+                )
+                spool_mfr = gr.Dropdown(
+                    label="Manufacturer", choices=KNOWN_COMPANIES,
+                    allow_custom_value=True,
+                )
+                spool_code_input = gr.Textbox(
+                    label="Spool Code", placeholder="e.g. 2A", max_lines=1,
+                )
+            with gr.Row():
+                spool_desc = gr.Textbox(
+                    label="Description", placeholder="e.g. Closed center, standard crossover",
+                    max_lines=1,
+                )
+                spool_center = gr.Textbox(
+                    label="Center Condition", placeholder="e.g. All ports blocked",
+                    max_lines=1,
+                )
+                spool_is_primary = gr.Dropdown(
+                    label="Primary?", choices=["No", "Yes"], value="No",
+                )
+            with gr.Row():
+                spool_add_btn = gr.Button("Add Spool Type", variant="primary")
+                spool_add_status = gr.Textbox(label="Status")
+
+            spool_add_btn.click(
+                add_spool_type_ref,
+                inputs=[spool_series, spool_mfr, spool_code_input,
+                        spool_desc, spool_center, spool_is_primary],
+                outputs=[spool_add_status, spool_ref_table],
+            )
+
+            gr.Markdown("### Primary Spool Types (Main Runners)")
+            gr.Markdown(
+                "Set which spool types are **primary** to limit product generation. "
+                "When primary spools are defined, only those variants are generated "
+                "instead of all 30+ combinations. Enter codes comma-separated."
+            )
+            with gr.Row():
+                spool_primary_codes = gr.Textbox(
+                    label="Primary Spool Codes (comma-separated)",
+                    placeholder="e.g. 2A, 2B, 2C, 6C, D, H, 0C, 33C",
+                    max_lines=1,
+                )
+                spool_primary_btn = gr.Button("Set Primary Spools", variant="primary")
+                spool_primary_status = gr.Textbox(label="Status")
+
+            spool_primary_btn.click(
+                set_primary_spools_bulk,
+                inputs=[spool_primary_codes, spool_mfr_filter],
+                outputs=[spool_primary_status, spool_ref_table],
+            )
+
+            gr.Markdown("### Toggle Individual Spool Primary")
+            with gr.Row():
+                spool_toggle_id = gr.Textbox(
+                    label="Reference ID (prefix)", placeholder="e.g. a1b2c3",
+                    max_lines=1,
+                )
+                spool_toggle_primary = gr.Dropdown(
+                    label="Set Primary", choices=["Yes", "No"], value="Yes",
+                )
+                spool_toggle_btn = gr.Button("Toggle Primary")
+                spool_toggle_status = gr.Textbox(label="Status")
+
+            spool_toggle_btn.click(
+                toggle_spool_primary,
+                inputs=[spool_toggle_id, spool_toggle_primary],
+                outputs=[spool_toggle_status, spool_ref_table],
+            )
+
+            gr.Markdown("### Import from Existing Products")
+            gr.Markdown(
+                "Scan products already in the database and auto-populate the spool "
+                "reference table. Useful for bootstrapping from existing data."
+            )
+            with gr.Row():
+                spool_import_mfr = gr.Dropdown(
+                    label="Manufacturer", choices=KNOWN_COMPANIES,
+                    allow_custom_value=True,
+                )
+                spool_import_btn = gr.Button("Import from Database")
+                spool_import_status = gr.Textbox(label="Import Status")
+
+            spool_import_btn.click(
+                import_spools_from_database,
+                inputs=[spool_import_mfr],
+                outputs=[spool_import_status, spool_ref_table],
+            )
+
+            gr.Markdown("### Delete Spool Type")
+            with gr.Row():
+                spool_delete_id = gr.Textbox(
+                    label="Reference ID (prefix)", placeholder="e.g. a1b2c3",
+                    max_lines=1,
+                )
+                spool_delete_btn = gr.Button("Delete", variant="stop")
+                spool_delete_status = gr.Textbox(label="Delete Status")
+
+            spool_delete_btn.click(
+                delete_spool_type_ref,
+                inputs=[spool_delete_id],
+                outputs=[spool_delete_status, spool_ref_table],
             )
 
 

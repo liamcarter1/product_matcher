@@ -3,10 +3,13 @@ ProductMatchPro - Lookup & Matching Tools
 Tools for the LangGraph workflow to find and compare products.
 """
 
+import logging
 from typing import Optional
 from models import HydraulicProduct, MatchResult, ScoreBreakdown, CONFIDENCE_THRESHOLD
 from storage.product_db import ProductDB
 from storage.vector_store import VectorStore
+
+logger = logging.getLogger(__name__)
 
 
 class LookupTools:
@@ -125,6 +128,23 @@ class LookupTools:
 
         # Build query from competitor product
         query = self.vs._build_indexable_text(competitor)
+
+        # Enrich query with cross-reference series hint (additive, not replacing)
+        xref_hints = self.db.lookup_series_by_competitor_prefix(
+            competitor.model_code, competitor.company
+        )
+        if xref_hints:
+            # Use the most specific match (longest competitor_series prefix)
+            best_hint = xref_hints[0]
+            hint_series = best_hint["my_company_series"]
+            hint_type = best_hint.get("product_type", "")
+            hint_text = f" {my_company_name} equivalent series: {hint_series}"
+            if hint_type:
+                hint_text += f" ({hint_type})"
+            query = query + hint_text
+            logger.info("Cross-reference hint: %s %s -> %s %s",
+                        competitor.company, competitor.model_code,
+                        my_company_name, hint_series)
 
         # Semantic search in Danfoss collection with category
         semantic_results = self.vs.search_my_company(

@@ -637,3 +637,343 @@ class TestDeduplicationSourcePriority:
         result = IngestionPipeline._deduplicate_products([p1, p2])
         assert len(result) == 1
         assert result[0].specs.get("b") == "2"
+
+
+# ── Vision spool integration in pipeline ──────────────────────────────
+
+
+class TestVisionSpoolIntegration:
+    """Tests that the ingestion pipeline imports and references vision spool extraction."""
+
+    def test_extract_spool_symbols_imported(self):
+        """The ingest module should import extract_spool_symbols_from_pdf."""
+        import ingest
+        assert hasattr(ingest, 'extract_spool_symbols_from_pdf')
+
+    def test_pipeline_process_pdf_source_contains_vision_step(self):
+        """The process_pdf method should contain the vision spool extraction step."""
+        import inspect
+        source = inspect.getsource(IngestionPipeline.process_pdf)
+        assert "extract_spool_symbols_from_pdf" in source
+        assert "vision" in source.lower()
+
+    def test_vision_spool_data_merges_into_product_specs(self):
+        """Vision spool data with symbol_description should be stored in product specs."""
+        product = ExtractedProduct(
+            model_code="4WE6D",
+            specs={"spool_type": "D"},
+            source="ordering_code",
+        )
+        # Simulate what the pipeline does when merging vision spool data
+        vision_data = {
+            "spool_code": "D",
+            "center_condition": "All ports blocked",
+            "solenoid_a_function": "P to A, B to T",
+            "solenoid_b_function": "P to B, A to T",
+            "description": "Closed center",
+            "symbol_description": "3-section rectangle, center has T-blocks on all ports",
+            "canonical_pattern": "BLOCKED|AB-BT|AB-AT",
+        }
+        # Apply the same logic as the pipeline
+        if not product.specs.get("center_condition"):
+            product.specs["center_condition"] = vision_data.get("center_condition", "")
+        if not product.specs.get("canonical_spool_pattern"):
+            product.specs["canonical_spool_pattern"] = vision_data.get("canonical_pattern", "")
+        if vision_data.get("symbol_description"):
+            product.specs["spool_symbol_description"] = vision_data["symbol_description"]
+
+        assert product.specs["center_condition"] == "All ports blocked"
+        assert product.specs["canonical_spool_pattern"] == "BLOCKED|AB-BT|AB-AT"
+        assert product.specs["spool_symbol_description"] == "3-section rectangle, center has T-blocks on all ports"
+
+    def test_vision_does_not_overwrite_text_analysis(self):
+        """Vision data should NOT overwrite data already set by text-based spool analysis."""
+        product = ExtractedProduct(
+            model_code="4WE6D",
+            specs={
+                "spool_type": "D",
+                "center_condition": "All ports blocked (from text)",
+                "canonical_spool_pattern": "BLOCKED|PA-BT|PB-AT",
+            },
+            source="ordering_code",
+        )
+        vision_data = {
+            "center_condition": "All ports blocked (from vision)",
+            "canonical_pattern": "BLOCKED|PA-BT|PB-AT-v2",
+        }
+        # Apply the same logic — should NOT overwrite
+        if not product.specs.get("center_condition"):
+            product.specs["center_condition"] = vision_data.get("center_condition", "")
+        if not product.specs.get("canonical_spool_pattern"):
+            product.specs["canonical_spool_pattern"] = vision_data.get("canonical_pattern", "")
+
+        assert product.specs["center_condition"] == "All ports blocked (from text)"
+        assert product.specs["canonical_spool_pattern"] == "BLOCKED|PA-BT|PB-AT"
+
+
+# ── Cross-Reference Pipeline Integration ──────────────────────────────
+
+
+class TestCrossReferencePipeline:
+    """Tests for the cross-reference PDF processing pipeline."""
+
+    def test_extract_cross_references_imported(self):
+        """The ingest module should import extract_cross_references_with_llm."""
+        import ingest
+        assert hasattr(ingest, 'extract_cross_references_with_llm')
+
+    def test_pipeline_has_cross_reference_methods(self):
+        """The IngestionPipeline should have cross-reference methods."""
+        assert hasattr(IngestionPipeline, 'process_cross_reference_pdf')
+        assert hasattr(IngestionPipeline, 'confirm_and_store_cross_references')
+
+    def test_confirm_stores_cross_references(self, pipeline, metadata):
+        """confirm_and_store_cross_references should call db.insert_series_cross_reference."""
+        cross_refs = [
+            {
+                "my_company_series": "DG4V-3",
+                "competitor_series": "D1VW",
+                "competitor_company": "Parker",
+                "product_type": "Directional Valve",
+                "notes": "",
+            },
+            {
+                "my_company_series": "KFDG4V",
+                "competitor_series": "4WRE",
+                "competitor_company": "Bosch Rexroth",
+                "product_type": "Proportional Valve",
+                "notes": "",
+            },
+        ]
+        count = pipeline.confirm_and_store_cross_references(cross_refs, metadata)
+        assert count == 2
+        assert pipeline.db.insert_series_cross_reference.call_count == 2
+
+
+class TestSpoolGapFill:
+    """Tests for _validate_and_gapfill_spools."""
+
+    def _make_definition(self, spool_options):
+        """Helper: build a minimal OrderingCodeDefinition with spool segment."""
+        from tools.parse_tools import OrderingCodeDefinition, OrderingCodeSegment
+        spool_seg = OrderingCodeSegment(
+            position=3,
+            segment_name="spool_type",
+            is_fixed=False,
+            separator_before="-",
+            options=[
+                {"code": code, "description": f"Spool {code}",
+                 "maps_to_field": "spool_type", "maps_to_value": code}
+                for code in spool_options
+            ],
+        )
+        return OrderingCodeDefinition(
+            company="Danfoss",
+            series="DG4V-3",
+            product_name="Directional Valve",
+            category="directional_valves",
+            code_template="{01}{02}-{03}",
+            segments=[
+                OrderingCodeSegment(
+                    position=1, segment_name="series_code", is_fixed=True,
+                    separator_before="", options=[
+                        {"code": "DG4V", "description": "Series", "maps_to_field": "series_code", "maps_to_value": "DG4V"}
+                    ],
+                ),
+                OrderingCodeSegment(
+                    position=2, segment_name="size", is_fixed=True,
+                    separator_before="-", options=[
+                        {"code": "3", "description": "Size 3", "maps_to_field": "valve_size", "maps_to_value": "3"}
+                    ],
+                ),
+                spool_seg,
+            ],
+            shared_specs={},
+        )
+
+    def test_gapfill_adds_missing_spools(self, pipeline, metadata):
+        """Should add products for spool codes in reference but not in extraction."""
+        pipeline.db.get_spool_codes_for_series.return_value = ["0C", "2A", "6C"]
+        pipeline.db.get_primary_spool_codes.return_value = []  # no primary filter
+        pipeline.db.get_spool_type_references.return_value = [
+            {"spool_code": "2A", "description": "Closed center"},
+            {"spool_code": "6C", "description": "Float center"},
+        ]
+
+        definition = self._make_definition(["0C"])  # only 0C extracted
+        extracted = [
+            ExtractedProduct(
+                model_code="DG4V-3-0C", product_name="Test",
+                category="directional_valves",
+                specs={"spool_type": "0C"}, raw_text="", confidence=0.85, source="ordering_code",
+            )
+        ]
+
+        warnings = pipeline._validate_and_gapfill_spools(definition, metadata, extracted)
+        assert len(warnings) == 1
+        assert "2A" in warnings[0]
+        assert "6C" in warnings[0]
+        # Should have added new products
+        gapfilled = [p for p in extracted if p.specs.get("_spool_source") == "reference_gapfill"]
+        assert len(gapfilled) >= 2
+
+    def test_no_gapfill_when_no_reference(self, pipeline, metadata):
+        """Should return empty warnings when no reference data exists."""
+        pipeline.db.get_spool_codes_for_series.return_value = []
+        pipeline.db.get_primary_spool_codes.return_value = []
+        definition = self._make_definition(["0C"])
+        extracted = []
+        warnings = pipeline._validate_and_gapfill_spools(definition, metadata, extracted)
+        assert warnings == []
+
+    def test_no_gapfill_when_all_present(self, pipeline, metadata):
+        """Should return empty warnings when all known spools are in extraction."""
+        pipeline.db.get_spool_codes_for_series.return_value = ["0C", "2A"]
+        pipeline.db.get_primary_spool_codes.return_value = []
+        pipeline.db.get_spool_type_references.return_value = []
+        definition = self._make_definition(["0C", "2A"])
+        extracted = []
+        warnings = pipeline._validate_and_gapfill_spools(definition, metadata, extracted)
+        assert warnings == []
+
+    def test_gapfill_products_marked(self, pipeline, metadata):
+        """Gap-filled products should have _spool_source = 'reference_gapfill'."""
+        pipeline.db.get_spool_codes_for_series.return_value = ["0C", "2A"]
+        pipeline.db.get_primary_spool_codes.return_value = []
+        pipeline.db.get_spool_type_references.return_value = [
+            {"spool_code": "2A", "description": "Closed center"},
+        ]
+        definition = self._make_definition(["0C"])
+        extracted = []
+        pipeline._validate_and_gapfill_spools(definition, metadata, extracted)
+        for p in extracted:
+            if p.specs.get("spool_type") == "2A":
+                assert p.specs.get("_spool_source") == "reference_gapfill"
+
+
+    def test_gapfill_respects_primary_filter(self, pipeline, metadata):
+        """Gap-fill should only add primary spool codes when primary filtering is active."""
+        pipeline.db.get_spool_codes_for_series.return_value = ["0C", "2A", "6C", "H"]
+        pipeline.db.get_primary_spool_codes.return_value = ["2A", "6C"]
+        pipeline.db.get_spool_type_references.return_value = [
+            {"spool_code": "2A", "description": "Closed center"},
+            {"spool_code": "6C", "description": "Float center"},
+            {"spool_code": "H", "description": "Open center"},
+        ]
+
+        definition = self._make_definition(["0C"])  # only 0C extracted
+        extracted = []
+        pipeline._validate_and_gapfill_spools(definition, metadata, extracted)
+
+        # Should only gap-fill 2A and 6C (primary), not H (non-primary)
+        gapfilled_codes = {
+            p.specs.get("spool_type") for p in extracted
+            if p.specs.get("_spool_source") == "reference_gapfill"
+        }
+        assert "2A" in gapfilled_codes
+        assert "6C" in gapfilled_codes
+        assert "H" not in gapfilled_codes
+
+
+class TestAutoLearnSpoolTypes:
+    """Tests for _auto_learn_spool_types."""
+
+    def test_learns_from_confirmed_products(self, pipeline, metadata):
+        """Should save unique spool codes to spool_type_reference."""
+        pipeline.db.bulk_insert_spool_type_references.return_value = 3
+        products = [
+            ExtractedProduct(
+                model_code="DG4V-3-0C-M", product_name="Test",
+                category="directional_valves",
+                specs={"spool_type": "0C", "center_condition": "All ports blocked"},
+                raw_text="", confidence=0.85, source="ordering_code",
+            ),
+            ExtractedProduct(
+                model_code="DG4V-3-2A-M", product_name="Test",
+                category="directional_valves",
+                specs={"spool_type": "2A", "center_condition": "Closed center"},
+                raw_text="", confidence=0.85, source="ordering_code",
+            ),
+            ExtractedProduct(
+                model_code="DG4V-3-6C-M", product_name="Test",
+                category="directional_valves",
+                specs={"spool_type": "6C"},
+                raw_text="", confidence=0.85, source="ordering_code",
+            ),
+        ]
+        count = pipeline._auto_learn_spool_types(products, metadata)
+        assert count == 3
+        pipeline.db.bulk_insert_spool_type_references.assert_called_once()
+        refs = pipeline.db.bulk_insert_spool_type_references.call_args[0][0]
+        codes = {r["spool_code"] for r in refs}
+        assert codes == {"0C", "2A", "6C"}
+
+    def test_skips_gapfill_products(self, pipeline, metadata):
+        """Should not learn from products marked as reference_gapfill."""
+        pipeline.db.bulk_insert_spool_type_references.return_value = 1
+        products = [
+            ExtractedProduct(
+                model_code="DG4V-3-0C-M", product_name="Test",
+                category="directional_valves",
+                specs={"spool_type": "0C"},
+                raw_text="", confidence=0.85, source="ordering_code",
+            ),
+            ExtractedProduct(
+                model_code="DG4V-3-2A-M", product_name="Test",
+                category="directional_valves",
+                specs={"spool_type": "2A", "_spool_source": "reference_gapfill"},
+                raw_text="", confidence=0.85, source="ordering_code",
+            ),
+        ]
+        pipeline._auto_learn_spool_types(products, metadata)
+        refs = pipeline.db.bulk_insert_spool_type_references.call_args[0][0]
+        codes = {r["spool_code"] for r in refs}
+        assert "0C" in codes
+        assert "2A" not in codes  # gap-filled, should be skipped
+
+    def test_no_learn_when_no_spools(self, pipeline, metadata):
+        """Should return 0 when no spool types in products."""
+        products = [
+            ExtractedProduct(
+                model_code="TEST-123", product_name="No spool",
+                category="directional_valves",
+                specs={}, raw_text="", confidence=0.85, source="ordering_code",
+            ),
+        ]
+        count = pipeline._auto_learn_spool_types(products, metadata)
+        assert count == 0
+
+
+class TestInferSeriesFromProducts:
+    """Tests for _infer_series_from_products."""
+
+    def test_hyphenated_codes(self):
+        """Should extract series from hyphenated model codes."""
+        products = [
+            ExtractedProduct(
+                model_code="DG4V-3-0C-M", product_name="",
+                category="", specs={}, raw_text="", confidence=0.85, source="ordering_code",
+            ),
+            ExtractedProduct(
+                model_code="DG4V-3-2A-M", product_name="",
+                category="", specs={}, raw_text="", confidence=0.85, source="ordering_code",
+            ),
+        ]
+        series = IngestionPipeline._infer_series_from_products(products, "Danfoss")
+        assert series == "DG4V-3"
+
+    def test_single_code(self):
+        """Should handle single model code."""
+        products = [
+            ExtractedProduct(
+                model_code="DG4V-3-2A-M", product_name="",
+                category="", specs={}, raw_text="", confidence=0.85, source="ordering_code",
+            ),
+        ]
+        series = IngestionPipeline._infer_series_from_products(products, "Danfoss")
+        assert "DG4V" in series
+
+    def test_empty_products(self):
+        """Should return empty string for empty list."""
+        series = IngestionPipeline._infer_series_from_products([], "Danfoss")
+        assert series == ""

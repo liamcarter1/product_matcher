@@ -122,6 +122,42 @@ class ProductDB:
                 term TEXT NOT NULL,
                 canonical TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS series_cross_reference (
+                id TEXT PRIMARY KEY,
+                my_company_series TEXT NOT NULL,
+                my_company_name TEXT NOT NULL DEFAULT 'Danfoss',
+                competitor_series TEXT NOT NULL,
+                competitor_company TEXT NOT NULL,
+                product_type TEXT DEFAULT '',
+                notes TEXT DEFAULT '',
+                source_document TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(my_company_series, competitor_series)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_xref_competitor
+                ON series_cross_reference(competitor_series, competitor_company);
+
+            CREATE TABLE IF NOT EXISTS spool_type_reference (
+                id TEXT PRIMARY KEY,
+                series_prefix TEXT NOT NULL,
+                manufacturer TEXT NOT NULL,
+                spool_code TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                center_condition TEXT DEFAULT '',
+                solenoid_a_function TEXT DEFAULT '',
+                solenoid_b_function TEXT DEFAULT '',
+                canonical_pattern TEXT DEFAULT '',
+                is_primary INTEGER DEFAULT 0,
+                source TEXT DEFAULT 'manual',
+                source_document TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(series_prefix, manufacturer, spool_code)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_spool_ref_series
+                ON spool_type_reference(series_prefix, manufacturer);
         """)
         self.conn.commit()
 
@@ -133,6 +169,15 @@ class ProductDB:
         if "extra_specs" not in existing_columns:
             self.conn.execute(
                 "ALTER TABLE products ADD COLUMN extra_specs TEXT DEFAULT '{}'"
+            )
+            self.conn.commit()
+
+        # Migrate spool_type_reference if it exists but lacks is_primary
+        cursor = self.conn.execute("PRAGMA table_info(spool_type_reference)")
+        spool_columns = {row[1] for row in cursor.fetchall()}
+        if spool_columns and "is_primary" not in spool_columns:
+            self.conn.execute(
+                "ALTER TABLE spool_type_reference ADD COLUMN is_primary INTEGER DEFAULT 0"
             )
             self.conn.commit()
 
@@ -474,6 +519,306 @@ class ProductDB:
                 "INSERT OR REPLACE INTO synonyms (id, term, canonical) VALUES (?, ?, ?)",
                 (str(uuid.uuid4()), term, canonical),
             )
+            self.conn.commit()
+
+    # ── Series Cross-Reference ─────────────────────────────────────────
+
+    def insert_series_cross_reference(
+        self,
+        my_company_series: str,
+        competitor_series: str,
+        competitor_company: str,
+        product_type: str = "",
+        notes: str = "",
+        source_document: str = "",
+        my_company_name: str = "Danfoss",
+    ):
+        """Insert or update a series-level cross-reference mapping."""
+        with self._lock:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO series_cross_reference
+                   (id, my_company_series, my_company_name, competitor_series,
+                    competitor_company, product_type, notes, source_document)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (str(uuid.uuid4()), my_company_series, my_company_name,
+                 competitor_series, competitor_company, product_type, notes,
+                 source_document),
+            )
+            self.conn.commit()
+
+    def lookup_series_by_competitor_prefix(
+        self,
+        competitor_model_code: str,
+        competitor_company: str = None,
+    ) -> list[dict]:
+        """Find Danfoss series whose competitor_series is a prefix of the model code.
+
+        Returns list of dicts with my_company_series, competitor_series, etc.
+        Longest prefix match is returned first (most specific).
+        """
+        code_upper = competitor_model_code.upper().strip()
+        cursor = self.conn.cursor()
+
+        if competitor_company:
+            cursor.execute(
+                """SELECT * FROM series_cross_reference
+                   WHERE UPPER(competitor_company) = ?
+                   ORDER BY LENGTH(competitor_series) DESC""",
+                (competitor_company.upper(),),
+            )
+        else:
+            cursor.execute(
+                """SELECT * FROM series_cross_reference
+                   ORDER BY LENGTH(competitor_series) DESC""",
+            )
+
+        results = []
+        for row in cursor.fetchall():
+            prefix = row["competitor_series"].upper().strip()
+            if code_upper.startswith(prefix):
+                results.append(dict(row))
+
+        return results
+
+    def get_all_cross_references(self) -> list[dict]:
+        """Return all series cross-reference mappings for admin display."""
+        cursor = self.conn.execute(
+            "SELECT * FROM series_cross_reference ORDER BY competitor_company, competitor_series"
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def delete_cross_references_by_source(self, source_document: str):
+        """Delete all cross-references from a specific source document."""
+        with self._lock:
+            self.conn.execute(
+                "DELETE FROM series_cross_reference WHERE source_document = ?",
+                (source_document,),
+            )
+            self.conn.commit()
+
+    # ── Spool Type Reference ────────────────────────────────────────────
+
+    def insert_spool_type_reference(
+        self,
+        series_prefix: str,
+        manufacturer: str,
+        spool_code: str,
+        description: str = "",
+        center_condition: str = "",
+        solenoid_a_function: str = "",
+        solenoid_b_function: str = "",
+        canonical_pattern: str = "",
+        is_primary: bool = False,
+        source: str = "manual",
+        source_document: str = "",
+    ):
+        """Insert or update a known spool type for a manufacturer/series."""
+        with self._lock:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO spool_type_reference
+                   (id, series_prefix, manufacturer, spool_code, description,
+                    center_condition, solenoid_a_function, solenoid_b_function,
+                    canonical_pattern, is_primary, source, source_document)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (str(uuid.uuid4()), series_prefix, manufacturer, spool_code,
+                 description, center_condition, solenoid_a_function,
+                 solenoid_b_function, canonical_pattern,
+                 1 if is_primary else 0, source, source_document),
+            )
+            self.conn.commit()
+
+    def get_spool_type_references(
+        self,
+        series_prefix: str = None,
+        manufacturer: str = None,
+    ) -> list[dict]:
+        """Get known spool types, optionally filtered by series and/or manufacturer.
+
+        Fuzzy prefix matching: stored 'DG4V' matches query 'DG4V-3' and vice versa.
+        """
+        cursor = self.conn.cursor()
+
+        if manufacturer and series_prefix:
+            # Fetch all rows for this manufacturer, then filter by fuzzy prefix
+            cursor.execute(
+                """SELECT * FROM spool_type_reference
+                   WHERE UPPER(manufacturer) = ?
+                   ORDER BY series_prefix, spool_code""",
+                (manufacturer.upper(),),
+            )
+            query_upper = series_prefix.upper().strip()
+            results = []
+            for row in cursor.fetchall():
+                stored_upper = row["series_prefix"].upper().strip()
+                # Fuzzy: stored is prefix of query OR query is prefix of stored
+                if query_upper.startswith(stored_upper) or stored_upper.startswith(query_upper):
+                    results.append(dict(row))
+            return results
+        elif manufacturer:
+            cursor.execute(
+                """SELECT * FROM spool_type_reference
+                   WHERE UPPER(manufacturer) = ?
+                   ORDER BY series_prefix, spool_code""",
+                (manufacturer.upper(),),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+        elif series_prefix:
+            cursor.execute(
+                "SELECT * FROM spool_type_reference ORDER BY series_prefix, spool_code",
+            )
+            query_upper = series_prefix.upper().strip()
+            results = []
+            for row in cursor.fetchall():
+                stored_upper = row["series_prefix"].upper().strip()
+                if query_upper.startswith(stored_upper) or stored_upper.startswith(query_upper):
+                    results.append(dict(row))
+            return results
+        else:
+            cursor.execute(
+                "SELECT * FROM spool_type_reference ORDER BY manufacturer, series_prefix, spool_code",
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_spool_codes_for_series(
+        self,
+        series_prefix: str,
+        manufacturer: str,
+    ) -> list[str]:
+        """Return just the spool code strings for a specific series/manufacturer.
+
+        Used for prompt injection and post-extraction validation.
+        """
+        refs = self.get_spool_type_references(series_prefix, manufacturer)
+        return sorted(set(r["spool_code"] for r in refs))
+
+    def bulk_insert_spool_type_references(self, references: list[dict]) -> int:
+        """Insert multiple spool type references at once.
+
+        Skips duplicates silently (INSERT OR IGNORE).
+        Returns count of newly inserted rows.
+        """
+        inserted = 0
+        with self._lock:
+            cursor = self.conn.cursor()
+            for ref in references:
+                try:
+                    cursor.execute(
+                        """INSERT OR IGNORE INTO spool_type_reference
+                           (id, series_prefix, manufacturer, spool_code, description,
+                            center_condition, solenoid_a_function, solenoid_b_function,
+                            canonical_pattern, is_primary, source, source_document)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (str(uuid.uuid4()),
+                         ref.get("series_prefix", ""),
+                         ref.get("manufacturer", ""),
+                         ref.get("spool_code", ""),
+                         ref.get("description", ""),
+                         ref.get("center_condition", ""),
+                         ref.get("solenoid_a_function", ""),
+                         ref.get("solenoid_b_function", ""),
+                         ref.get("canonical_pattern", ""),
+                         1 if ref.get("is_primary") else 0,
+                         ref.get("source", "auto_confirmed"),
+                         ref.get("source_document", "")),
+                    )
+                    if cursor.rowcount > 0:
+                        inserted += 1
+                except sqlite3.IntegrityError:
+                    continue
+            self.conn.commit()
+        return inserted
+
+    def delete_spool_type_reference(self, ref_id: str):
+        """Delete a single spool type reference by id (prefix match)."""
+        with self._lock:
+            cursor = self.conn.cursor()
+            # Try exact match first
+            cursor.execute(
+                "DELETE FROM spool_type_reference WHERE id = ?", (ref_id,)
+            )
+            if cursor.rowcount == 0:
+                # Try prefix match
+                cursor.execute(
+                    "DELETE FROM spool_type_reference WHERE id LIKE ?",
+                    (ref_id + "%",),
+                )
+            self.conn.commit()
+
+    def get_primary_spool_codes(
+        self,
+        series_prefix: str,
+        manufacturer: str,
+    ) -> list[str]:
+        """Return spool codes marked as primary (main runners) for a series.
+
+        Uses the same fuzzy prefix matching as get_spool_type_references.
+        Returns empty list if no spools are marked primary (meaning: use all).
+        """
+        refs = self.get_spool_type_references(series_prefix, manufacturer)
+        primary_codes = [r["spool_code"] for r in refs if r.get("is_primary")]
+        return sorted(set(primary_codes))
+
+    def update_spool_type_primary(self, ref_id: str, is_primary: bool):
+        """Toggle the is_primary flag on a spool type reference."""
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "UPDATE spool_type_reference SET is_primary = ? WHERE id = ?",
+                (1 if is_primary else 0, ref_id),
+            )
+            if cursor.rowcount == 0:
+                # Try prefix match
+                cursor.execute(
+                    "UPDATE spool_type_reference SET is_primary = ? WHERE id LIKE ?",
+                    (1 if is_primary else 0, ref_id + "%"),
+                )
+            self.conn.commit()
+
+    def set_all_spools_primary(
+        self,
+        manufacturer: str,
+        spool_codes: list[str],
+        series_prefix: str = None,
+    ):
+        """Mark specific spool codes as primary for a manufacturer."""
+        with self._lock:
+            for code in spool_codes:
+                if series_prefix:
+                    self.conn.execute(
+                        """UPDATE spool_type_reference SET is_primary = 1
+                           WHERE UPPER(spool_code) = ?
+                             AND UPPER(manufacturer) = ?
+                             AND UPPER(series_prefix) = ?""",
+                        (code.upper(), manufacturer.upper(), series_prefix.upper()),
+                    )
+                else:
+                    self.conn.execute(
+                        """UPDATE spool_type_reference SET is_primary = 1
+                           WHERE UPPER(spool_code) = ?
+                             AND UPPER(manufacturer) = ?""",
+                        (code.upper(), manufacturer.upper()),
+                    )
+            self.conn.commit()
+
+    def clear_all_spools_primary(
+        self,
+        manufacturer: str,
+        series_prefix: str = None,
+    ):
+        """Clear all primary flags for a manufacturer (optionally scoped to series)."""
+        with self._lock:
+            if series_prefix:
+                self.conn.execute(
+                    """UPDATE spool_type_reference SET is_primary = 0
+                       WHERE UPPER(manufacturer) = ? AND UPPER(series_prefix) = ?""",
+                    (manufacturer.upper(), series_prefix.upper()),
+                )
+            else:
+                self.conn.execute(
+                    """UPDATE spool_type_reference SET is_primary = 0
+                       WHERE UPPER(manufacturer) = ?""",
+                    (manufacturer.upper(),),
+                )
             self.conn.commit()
 
     # ── Spec Comparison ───────────────────────────────────────────────

@@ -26,6 +26,7 @@ class DocumentType(str, Enum):
     CATALOGUE = "catalogue"
     USER_GUIDE = "user_guide"
     DATASHEET = "datasheet"
+    CROSS_REFERENCE = "cross_reference"
 
 
 class HydraulicProduct(BaseModel):

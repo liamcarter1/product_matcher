@@ -17,6 +17,8 @@ from tools.parse_tools import (
     generate_products_from_ordering_code,
     table_rows_to_products,
     compute_canonical_pattern,
+    extract_spool_symbols_from_pdf,
+    extract_cross_references_with_llm,
     HEADER_MAPPINGS,
     _VALID_SPEC_FIELDS,
     MAX_COMBINATIONS,
@@ -333,6 +335,100 @@ class TestGenerateProductsFromOrderingCode:
         assert "T-E-M" in codes
 
 
+class TestPrimarySpoolFilter:
+    """Tests for primary_spool_codes parameter in generate_products_from_ordering_code."""
+
+    @pytest.fixture
+    def metadata(self):
+        return UploadMetadata(
+            company="Test", document_type=DocumentType.DATASHEET,
+            category="directional_valves", filename="test.pdf",
+        )
+
+    def _make_definition(self, spool_codes, extra_segments=None):
+        segments = [
+            OrderingCodeSegment(position=1, segment_name="series", is_fixed=True,
+                                options=[{"code": "T", "maps_to_field": "", "maps_to_value": None}]),
+            OrderingCodeSegment(position=2, segment_name="spool_type", is_fixed=False,
+                                options=[
+                                    {"code": c, "maps_to_field": "spool_type", "maps_to_value": c}
+                                    for c in spool_codes
+                                ]),
+        ]
+        if extra_segments:
+            segments.extend(extra_segments)
+        return OrderingCodeDefinition(
+            company="Test", series="T", code_template="{01}-{02}",
+            segments=segments,
+        )
+
+    def test_primary_filter_reduces_products(self, metadata):
+        """When primary codes set, only those spools generate products."""
+        defn = self._make_definition(["D", "E", "H", "J"])
+        products = generate_products_from_ordering_code(
+            defn, metadata, primary_spool_codes=["D", "H"],
+        )
+        assert len(products) == 2
+        codes = {p.model_code for p in products}
+        assert "T-D" in codes
+        assert "T-H" in codes
+        assert "T-E" not in codes
+
+    def test_none_means_all(self, metadata):
+        """primary_spool_codes=None should generate all products."""
+        defn = self._make_definition(["D", "E"])
+        products = generate_products_from_ordering_code(defn, metadata, primary_spool_codes=None)
+        assert len(products) == 2
+
+    def test_empty_list_means_all(self, metadata):
+        """primary_spool_codes=[] should generate all products."""
+        defn = self._make_definition(["D", "E"])
+        products = generate_products_from_ordering_code(defn, metadata, primary_spool_codes=[])
+        assert len(products) == 2
+
+    def test_no_matching_codes_keeps_all(self, metadata):
+        """If no primary codes match any option, keep all options."""
+        defn = self._make_definition(["D", "E"])
+        products = generate_products_from_ordering_code(
+            defn, metadata, primary_spool_codes=["NONEXISTENT"],
+        )
+        assert len(products) == 2
+
+    def test_only_affects_spool_segment(self, metadata):
+        """Primary filter should not affect non-spool segments."""
+        defn = self._make_definition(
+            ["D", "E", "H"],
+            extra_segments=[
+                OrderingCodeSegment(position=3, segment_name="seal", is_fixed=False,
+                                    options=[
+                                        {"code": "V", "maps_to_field": "seal_material", "maps_to_value": "FKM"},
+                                        {"code": "M", "maps_to_field": "seal_material", "maps_to_value": "NBR"},
+                                    ]),
+            ],
+        )
+        defn.code_template = "{01}-{02}-{03}"
+        products = generate_products_from_ordering_code(
+            defn, metadata, primary_spool_codes=["D"],
+        )
+        # 1 spool * 2 seal = 2 products
+        assert len(products) == 2
+        spool_types = {p.specs.get("spool_type") for p in products}
+        assert spool_types == {"D"}
+        seals = {p.specs.get("seal_material") for p in products}
+        assert seals == {"FKM", "NBR"}
+
+    def test_case_insensitive(self, metadata):
+        """Primary spool filter should be case-insensitive."""
+        defn = self._make_definition(["D", "E", "H"])
+        products = generate_products_from_ordering_code(
+            defn, metadata, primary_spool_codes=["d", "h"],
+        )
+        assert len(products) == 2
+        codes = {p.model_code for p in products}
+        assert "T-D" in codes
+        assert "T-H" in codes
+
+
 # ── table_rows_to_products ───────────────────────────────────────────
 
 
@@ -598,3 +694,281 @@ class TestComputeCanonicalPattern:
         p1 = compute_canonical_pattern("Blocked", "P→A, B→T", "P→B, A→T")
         p2 = compute_canonical_pattern("Blocked", "P→A, B→T", "P→B, A→T")
         assert p1 == p2
+
+
+# ── Vision-based spool symbol extraction ──────────────────────────────
+
+
+class TestExtractSpoolSymbolsFromPdf:
+    """Tests for extract_spool_symbols_from_pdf — GPT-4o vision spool extraction."""
+
+    @patch("tools.parse_tools.HAS_PYMUPDF", False)
+    def test_returns_empty_without_pymupdf(self):
+        """Should gracefully return [] if PyMuPDF is not available."""
+        result = extract_spool_symbols_from_pdf("fake.pdf", "Rexroth")
+        assert result == []
+
+    @patch("tools.parse_tools._fitz")
+    @patch("tools.parse_tools._get_client")
+    def test_extracts_spool_from_page(self, mock_client, mock_fitz):
+        """Should extract spool data from a PDF page via GPT-4o vision."""
+        # Mock PDF with one page
+        mock_page = MagicMock()
+        mock_pix = MagicMock()
+        mock_pix.tobytes.return_value = b"\x89PNG" + b"\x00" * 10000  # > 5000 bytes
+        mock_page.get_pixmap.return_value = mock_pix
+
+        mock_doc = MagicMock()
+        mock_doc.__len__ = MagicMock(return_value=1)
+        mock_doc.__getitem__ = MagicMock(return_value=mock_page)
+        mock_fitz.open.return_value = mock_doc
+
+        # Mock OpenAI response
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = '{"spool_symbols": [{"spool_code": "D", "center_condition": "All ports blocked", "solenoid_a_function": "P to A, B to T", "solenoid_b_function": "P to B, A to T", "description": "Closed center", "symbol_description": "3-position, center blocked"}]}'
+        mock_client.return_value.chat.completions.create.return_value = mock_response
+
+        result = extract_spool_symbols_from_pdf("test.pdf", "Rexroth")
+
+        assert len(result) == 1
+        assert result[0]["spool_code"] == "D"
+        assert result[0]["company"] == "Rexroth"
+        assert result[0]["extraction_method"] == "vision"
+        assert "canonical_pattern" in result[0]
+        assert result[0]["canonical_pattern"].startswith("BLOCKED|")
+
+    @patch("tools.parse_tools._fitz")
+    @patch("tools.parse_tools._get_client")
+    def test_deduplicates_by_spool_code(self, mock_client, mock_fitz):
+        """Should deduplicate spool symbols found on multiple pages."""
+        # Mock PDF with 2 pages
+        mock_page = MagicMock()
+        mock_pix = MagicMock()
+        mock_pix.tobytes.return_value = b"\x89PNG" + b"\x00" * 10000
+        mock_page.get_pixmap.return_value = mock_pix
+
+        mock_doc = MagicMock()
+        mock_doc.__len__ = MagicMock(return_value=2)
+        mock_doc.__getitem__ = MagicMock(return_value=mock_page)
+        mock_fitz.open.return_value = mock_doc
+
+        # Both pages return the same spool code "D"
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = '{"spool_symbols": [{"spool_code": "D", "center_condition": "All ports blocked", "solenoid_a_function": "P to A, B to T", "solenoid_b_function": "P to B, A to T", "description": "Closed center", "symbol_description": "basic"}]}'
+        mock_client.return_value.chat.completions.create.return_value = mock_response
+
+        result = extract_spool_symbols_from_pdf("test.pdf", "Rexroth")
+        assert len(result) == 1  # Deduplicated
+
+    @patch("tools.parse_tools._fitz")
+    @patch("tools.parse_tools._get_client")
+    def test_skips_small_pages(self, mock_client, mock_fitz):
+        """Should skip pages with very small rendered images (likely blank)."""
+        mock_page = MagicMock()
+        mock_pix = MagicMock()
+        mock_pix.tobytes.return_value = b"\x89PNG" + b"\x00" * 100  # < 5000 bytes
+        mock_page.get_pixmap.return_value = mock_pix
+
+        mock_doc = MagicMock()
+        mock_doc.__len__ = MagicMock(return_value=1)
+        mock_doc.__getitem__ = MagicMock(return_value=mock_page)
+        mock_fitz.open.return_value = mock_doc
+
+        result = extract_spool_symbols_from_pdf("test.pdf", "Rexroth")
+        assert result == []
+        mock_client.return_value.chat.completions.create.assert_not_called()
+
+    @patch("tools.parse_tools._fitz")
+    @patch("tools.parse_tools._get_client")
+    def test_no_spools_found(self, mock_client, mock_fitz):
+        """Should return empty list when no spool symbols are found."""
+        mock_page = MagicMock()
+        mock_pix = MagicMock()
+        mock_pix.tobytes.return_value = b"\x89PNG" + b"\x00" * 10000
+        mock_page.get_pixmap.return_value = mock_pix
+
+        mock_doc = MagicMock()
+        mock_doc.__len__ = MagicMock(return_value=1)
+        mock_doc.__getitem__ = MagicMock(return_value=mock_page)
+        mock_fitz.open.return_value = mock_doc
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = '{"spool_symbols": []}'
+        mock_client.return_value.chat.completions.create.return_value = mock_response
+
+        result = extract_spool_symbols_from_pdf("test.pdf", "Rexroth")
+        assert result == []
+
+    @patch("tools.parse_tools._fitz")
+    def test_handles_pdf_open_failure(self, mock_fitz):
+        """Should handle PDF open failure gracefully."""
+        mock_fitz.open.side_effect = Exception("Cannot open PDF")
+        result = extract_spool_symbols_from_pdf("bad.pdf", "Rexroth")
+        assert result == []
+
+    @patch("tools.parse_tools._fitz")
+    @patch("tools.parse_tools._get_client")
+    def test_multiple_spools_on_one_page(self, mock_client, mock_fitz):
+        """Should extract multiple different spool symbols from one page."""
+        mock_page = MagicMock()
+        mock_pix = MagicMock()
+        mock_pix.tobytes.return_value = b"\x89PNG" + b"\x00" * 10000
+        mock_page.get_pixmap.return_value = mock_pix
+
+        mock_doc = MagicMock()
+        mock_doc.__len__ = MagicMock(return_value=1)
+        mock_doc.__getitem__ = MagicMock(return_value=mock_page)
+        mock_fitz.open.return_value = mock_doc
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = '{"spool_symbols": [{"spool_code": "D", "center_condition": "All ports blocked", "solenoid_a_function": "P to A, B to T", "solenoid_b_function": "P to B, A to T", "description": "Closed", "symbol_description": "blocked center"}, {"spool_code": "E", "center_condition": "All ports open", "solenoid_a_function": "P to A, B to T", "solenoid_b_function": "P to B, A to T", "description": "Open", "symbol_description": "open center"}]}'
+        mock_client.return_value.chat.completions.create.return_value = mock_response
+
+        result = extract_spool_symbols_from_pdf("test.pdf", "Rexroth")
+        assert len(result) == 2
+        codes = {s["spool_code"] for s in result}
+        assert codes == {"D", "E"}
+
+
+# ── Ordering code prompt completeness ─────────────────────────────────
+
+
+class TestOrderingCodePromptCompleteness:
+    """Verify the ordering code LLM prompt includes instructions about blank panels."""
+
+    def test_prompt_mentions_blank_panels(self):
+        """The prompt should instruct LLM to handle blank/optional positions."""
+        from tools.parse_tools import extract_ordering_code_with_llm
+        import inspect
+        source = inspect.getsource(extract_ordering_code_with_llm)
+        assert "blank" in source.lower() or "BLANK" in source
+        assert "numbered description" in source.lower() or "description table" in source.lower()
+
+    def test_prompt_uses_smart_text_selection(self):
+        """The prompt should use _select_ordering_code_text for smart text windowing."""
+        from tools.parse_tools import extract_ordering_code_with_llm
+        import inspect
+        source = inspect.getsource(extract_ordering_code_with_llm)
+        assert "_select_ordering_code_text" in source
+
+    def test_prompt_requires_all_positions(self):
+        """The prompt should explicitly require ALL positions to be present."""
+        from tools.parse_tools import extract_ordering_code_with_llm
+        import inspect
+        source = inspect.getsource(extract_ordering_code_with_llm)
+        assert "NEVER skip" in source or "Do NOT collapse" in source
+
+
+# ── Cross-reference extraction ────────────────────────────────────────
+
+
+class TestExtractCrossReferencesWithLLM:
+    """Tests for extract_cross_references_with_llm — GPT-4.1-mini cross-reference extraction."""
+
+    @patch("tools.parse_tools._get_client")
+    def test_extracts_mappings(self, mock_client):
+        """Should extract cross-reference mappings from text."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = '{"cross_references": [{"my_company_series": "DG4V-3", "competitor_series": "D1VW", "competitor_company": "Parker", "product_type": "Directional Valve", "notes": ""}]}'
+        mock_client.return_value.chat.completions.create.return_value = mock_response
+
+        result = extract_cross_references_with_llm("Some cross-reference text", "Danfoss")
+        assert len(result) == 1
+        assert result[0]["my_company_series"] == "DG4V-3"
+        assert result[0]["competitor_series"] == "D1VW"
+        assert result[0]["competitor_company"] == "Parker"
+
+    @patch("tools.parse_tools._get_client")
+    def test_skips_incomplete_entries(self, mock_client):
+        """Should skip entries missing required fields."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = '{"cross_references": [{"my_company_series": "DG4V-3", "competitor_series": "", "competitor_company": "Parker"}, {"my_company_series": "KFDG4V", "competitor_series": "4WRE", "competitor_company": "Bosch Rexroth"}]}'
+        mock_client.return_value.chat.completions.create.return_value = mock_response
+
+        result = extract_cross_references_with_llm("Some text", "Danfoss")
+        assert len(result) == 1  # Only the complete entry
+        assert result[0]["my_company_series"] == "KFDG4V"
+
+    def test_empty_text_returns_empty(self):
+        """Should return empty list for empty input."""
+        result = extract_cross_references_with_llm("", "Danfoss")
+        assert result == []
+
+    @patch("tools.parse_tools._get_client")
+    def test_handles_api_failure(self, mock_client):
+        """Should return empty list on API failure."""
+        mock_client.return_value.chat.completions.create.side_effect = Exception("API error")
+        result = extract_cross_references_with_llm("Some text", "Danfoss")
+        assert result == []
+
+    @patch("tools.parse_tools._get_client")
+    def test_multiple_competitors(self, mock_client):
+        """Should extract mappings for multiple competitors."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = '{"cross_references": [{"my_company_series": "DG4V-3", "competitor_series": "D1VW", "competitor_company": "Parker", "product_type": "Directional Valve", "notes": ""}, {"my_company_series": "DG4V-3", "competitor_series": "4WE6", "competitor_company": "Bosch Rexroth", "product_type": "Directional Valve", "notes": ""}]}'
+        mock_client.return_value.chat.completions.create.return_value = mock_response
+
+        result = extract_cross_references_with_llm("Cross-ref table", "Danfoss")
+        assert len(result) == 2
+        companies = {r["competitor_company"] for r in result}
+        assert companies == {"Parker", "Bosch Rexroth"}
+
+
+class TestSelectOrderingCodeText:
+    """Tests for _select_ordering_code_text — smart text selection for ordering code extraction."""
+
+    def test_short_text_returned_as_is(self):
+        """Text shorter than max_chars should be returned unchanged."""
+        from tools.parse_tools import _select_ordering_code_text
+        text = "Short document text about ordering codes."
+        result = _select_ordering_code_text(text, max_chars=50000)
+        assert result == text
+
+    def test_finds_ordering_code_section(self):
+        """Should extract text around 'Ordering Code' headers."""
+        from tools.parse_tools import _select_ordering_code_text
+        # Create text with ordering code section in the middle
+        padding = "x" * 20000
+        text = padding + "\n\nOrdering Code Breakdown\nDG4V-3-xx-xx\n" + padding
+        result = _select_ordering_code_text(text, max_chars=10000)
+        assert "Ordering Code Breakdown" in result
+        assert len(result) <= 10000
+
+    def test_finds_spool_type_section(self):
+        """Should extract text around 'spool type' / 'valve function' headers."""
+        from tools.parse_tools import _select_ordering_code_text
+        padding = "x" * 20000
+        text = padding + "\n\nSpool Type Designation\n2A - All ports blocked\n" + padding
+        result = _select_ordering_code_text(text, max_chars=10000)
+        assert "Spool Type Designation" in result
+
+    def test_fallback_to_first_n_chars(self):
+        """Should fall back to first max_chars when no headers found."""
+        from tools.parse_tools import _select_ordering_code_text
+        text = "No relevant headers here. " * 5000
+        result = _select_ordering_code_text(text, max_chars=10000)
+        assert len(result) <= 10000
+        assert result == text[:10000]
+
+    def test_merges_overlapping_ranges(self):
+        """Should merge overlapping text ranges from nearby sections."""
+        from tools.parse_tools import _select_ordering_code_text
+        padding = "x" * 500
+        text = (
+            padding
+            + "\n\nOrdering Code\n"
+            + padding
+            + "\n\nSpool Type Table\n"
+            + padding
+            + "x" * 50000
+        )
+        result = _select_ordering_code_text(text, max_chars=40000)
+        assert "Ordering Code" in result
+        assert "Spool Type Table" in result

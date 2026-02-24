@@ -556,9 +556,73 @@ _VALID_SPEC_FIELDS = {
 
 MAX_COMBINATIONS = 500
 
+# Section header patterns used for smart text selection
+_ORDERING_CODE_HEADERS = re.compile(
+    r'(?:ordering\s+code|how\s+to\s+order|model\s+(?:code|designation|number)\s+breakdown'
+    r'|order\s+number\s+code|ordering\s+information|code\s+structure)',
+    re.IGNORECASE,
+)
+_SPOOL_SECTION_HEADERS = re.compile(
+    r'(?:spool\s+type|valve\s+function|center\s+condition|centre\s+condition'
+    r'|spool\s+designation|spool\s+code|valve\s+spool)',
+    re.IGNORECASE,
+)
+
+
+def _select_ordering_code_text(full_text: str, max_chars: int = 40000) -> str:
+    """Select the most relevant text for ordering code extraction.
+
+    Instead of blindly truncating at N characters, this scans for section headers
+    like 'Ordering Code', 'Spool Type', 'Center Condition' and extracts those
+    sections with generous surrounding context.  Overlapping ranges are merged.
+
+    Falls back to first *max_chars* characters if nothing is found.
+    """
+    if len(full_text) <= max_chars:
+        return full_text
+
+    CONTEXT_BEFORE = 2000
+    CONTEXT_AFTER = 4000  # spool tables often follow the heading
+
+    ranges: list[tuple[int, int]] = []
+
+    for pattern in (_ORDERING_CODE_HEADERS, _SPOOL_SECTION_HEADERS):
+        for match in pattern.finditer(full_text):
+            start = max(0, match.start() - CONTEXT_BEFORE)
+            end = min(len(full_text), match.end() + CONTEXT_AFTER)
+            ranges.append((start, end))
+
+    if not ranges:
+        return full_text[:max_chars]
+
+    # Merge overlapping ranges
+    ranges.sort()
+    merged: list[tuple[int, int]] = [ranges[0]]
+    for start, end in ranges[1:]:
+        if start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+
+    # Collect text from merged ranges, respecting max_chars
+    parts: list[str] = []
+    total = 0
+    for start, end in merged:
+        chunk = full_text[start:end]
+        if total + len(chunk) > max_chars:
+            remaining = max_chars - total
+            if remaining > 500:
+                parts.append(chunk[:remaining])
+            break
+        parts.append(chunk)
+        total += len(chunk)
+
+    return "\n\n...\n\n".join(parts)
+
 
 def extract_ordering_code_with_llm(
-    text: str, company: str, category: str = ""
+    text: str, company: str, category: str = "",
+    known_spool_codes: list[str] = None,
 ) -> list[OrderingCodeDefinition]:
     """Use GPT-4o-mini to extract ordering code breakdown tables from datasheets.
 
@@ -579,6 +643,20 @@ Example: A Bosch Rexroth 4WRE ordering code "4WREE6...04-3XV/24A1" has:
 - Position 02: "WRE" (fixed, series identifier)
 - Position 06: flow rate (variable) — options: "04" (4 l/min), "08" (8 l/min), "16" (16 l/min), "32" (32 l/min)
 - Position 09: seal material (variable) — options: "V" (FKM), "M" (NBR)
+
+CRITICAL — BLANK/OPTIONAL POSITIONS:
+Some panels in the model code breakdown diagram may appear BLANK or show no default code.
+These blank panels are NOT to be skipped. They represent optional or variable positions.
+You MUST:
+1. Note the numbered position of the blank panel (e.g. position 7)
+2. Find the CORRESPONDING numbered description in the description table/list below the diagram
+   (these are usually numbered footnotes or a table with "Position 7: ..." or "7 = ...")
+3. Extract ALL the option codes and descriptions listed for that position
+4. Include the position as a variable segment with is_fixed=false and all its options
+5. EVERY letter/number that can appear at ANY position in the model code MUST be captured
+
+Do NOT collapse or skip ANY position. The resulting model codes must have ALL positions filled in.
+If a position is truly optional (no code needed), include it with one option having code="" (empty string).
 
 For the text below, extract ALL ordering code breakdown tables for company: {company}
 
@@ -636,22 +714,50 @@ Common spool function types to recognize in segment descriptions:
 - P to A&B, T blocked (regenerative)
 - A&B blocked, P to T (unloading)
 
+SPOOL OPTION COUNT — IMPORTANT:
+For standard directional valve series (DG4V, 4WE, D1VW, D*FW, etc.), the spool type segment
+typically has 10-30+ different options. If you find fewer than 5 spool type options for a
+directional valve series, you are VERY LIKELY MISSING options. Look more carefully through the
+entire document text for:
+- Spool type / valve function tables listing all available codes
+- Center condition tables with spool codes
+- Ordering code description footnotes listing spool options
+- Any table or list mapping letter codes to flow-path descriptions
+The spool type segment MUST be is_fixed=false with ALL options listed.
+
 SEGMENT NAMING RULES — CRITICAL:
 - EVERY segment MUST have a meaningful "segment_name" in snake_case (e.g. "manual_override", "design_number", "connection_type")
 - EVERY segment MUST have maps_to_field set to either a known spec field OR the segment_name itself
 - Do NOT use "" for maps_to_field — every segment maps to something. If it's a series identifier, use maps_to_field: "series_code"
-- Include ALL positions, both fixed and variable
+- Include ALL positions, both fixed and variable — NEVER skip a position number
+- A blank panel in the diagram still has a position number — find its options in the description tables below
 - For "no code" options (where nothing appears in the model code), set "code" to "" (empty string)
 - Skip positions marked as "free text" or "further details" — do not include them
 - maps_to_value for coil_voltage must be a string like "24VDC", not a bare number
 - maps_to_value for numeric fields (max_flow_lpm, max_pressure_bar, etc.) must be a number
 - Spool type/valve function segments MUST use maps_to_field: "spool_type"
+- The total number of segments MUST match the total number of positions shown in the breakdown diagram
 
 Return a JSON object: {{"ordering_codes": [...]}}
 If no ordering code tables found, return {{"ordering_codes": []}}
+"""
 
-Text:
-{text[:12000]}"""
+    # Inject known spool reference data when available
+    if known_spool_codes:
+        codes_str = ", ".join(f'"{c}"' for c in sorted(known_spool_codes))
+        prompt += f"""
+REFERENCE DATA — KNOWN SPOOL TYPES:
+For {company} products in this series family, the following spool type codes are KNOWN to exist
+from previous confirmed extractions: {codes_str}
+You MUST ensure ALL of these appear as options in the spool type segment (with is_fixed=false).
+If the document text does not explicitly mention some of these codes, still include them as
+options with description "Known spool type (from reference data)".
+Also include any ADDITIONAL spool types you find in the document that are NOT in this list.
+"""
+
+    # Use smart text selection to capture ordering code + spool sections
+    selected_text = _select_ordering_code_text(text)
+    prompt += f"\nText:\n{selected_text}"
 
     try:
         response = _get_client().chat.completions.create(
@@ -748,11 +854,16 @@ def assemble_model_code(template: str, segment_values: dict) -> str:
 def generate_products_from_ordering_code(
     definition: OrderingCodeDefinition,
     metadata: UploadMetadata,
+    primary_spool_codes: list[str] = None,
 ) -> list[ExtractedProduct]:
     """Generate all product combinations from an ordering code definition.
 
     For each combination of variable segment options, creates an ExtractedProduct
     with the assembled model code and populated spec fields.
+
+    When primary_spool_codes is provided and non-empty, the spool type segment is
+    filtered to only those codes before generating combinations. This dramatically
+    reduces the combination count for valve series with many spool options.
 
     Caps output at MAX_COMBINATIONS to prevent combinatorial explosion.
     """
@@ -762,6 +873,36 @@ def generate_products_from_ordering_code(
     # Separate fixed and variable segments
     fixed_segments = [s for s in definition.segments if s.is_fixed]
     variable_segments = [s for s in definition.segments if not s.is_fixed and len(s.options) > 0]
+
+    # Filter spool segment to primary codes only (if specified)
+    if primary_spool_codes:
+        primary_upper = {c.upper() for c in primary_spool_codes}
+        for seg in variable_segments:
+            is_spool_seg = seg.segment_name == "spool_type"
+            if not is_spool_seg:
+                for opt in seg.options:
+                    if opt.get("maps_to_field") == "spool_type":
+                        is_spool_seg = True
+                        break
+            if is_spool_seg:
+                original_options = list(seg.options)
+                filtered = [
+                    opt for opt in original_options
+                    if opt.get("code", "").upper() in primary_upper
+                ]
+                if filtered:
+                    logger.info(
+                        "Primary spool filter: %d -> %d spool options for %s",
+                        len(original_options), len(filtered), definition.series,
+                    )
+                    seg.options = filtered
+                else:
+                    logger.warning(
+                        "Primary spool filter: no matching primary codes for %s, "
+                        "keeping all %d options",
+                        definition.series, len(original_options),
+                    )
+                break
 
     # If no variable segments, generate a single product
     if not variable_segments:
@@ -1019,4 +1160,227 @@ DOCUMENT TEXT:
 
     except Exception as e:
         logger.error("Spool function analysis failed: %s", e)
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Step 6: Vision-based spool symbol extraction from PDF pages
+# ---------------------------------------------------------------------------
+
+SPOOL_VISION_MODEL = "gpt-4o"
+
+_SPOOL_VISION_PROMPT = """You are an expert hydraulic engineer analysing a page from a product datasheet.
+
+This page may contain HYDRAULIC SPOOL SYMBOL DIAGRAMS. These are standardised schematic diagrams
+(ISO 1219) showing valve spool positions with flow path arrows, blocked ports, and check valves.
+
+Each spool symbol shows:
+- A rectangle divided into sections (one section per valve switching position)
+- Arrows showing flow paths between ports (P=pressure, T=tank, A/B=work ports)
+- Blocked ports shown as T-symbols or dead-end lines
+- A letter/number CODE labelling the symbol (e.g. "D", "E", "H", "2A", "01")
+
+Your task: Identify ALL spool symbol diagrams on this page and for each one extract:
+
+1. "spool_code": the letter/number designation (e.g. "D", "2A", "H", "01", "EA")
+2. "center_condition": what happens in the center/neutral position
+   (e.g. "All ports blocked", "P and T connected, A and B blocked", "All ports open to tank")
+3. "solenoid_a_function": flow path when left/solenoid-A is energised (e.g. "P→A, B→T")
+4. "solenoid_b_function": flow path when right/solenoid-B is energised (e.g. "P→B, A→T")
+5. "description": brief summary of the spool function
+6. "symbol_description": describe the visual symbol pattern in detail (arrows, blocked ports,
+   flow paths in each position from left to right). This text description of the VISUAL SYMBOL
+   will be used to match equivalent spool functions across different manufacturers regardless
+   of their letter codes.
+
+For 2-position valves, set center_condition to "N/A (2-position valve)" and only fill solenoid_a_function.
+
+Return valid JSON: {"spool_symbols": [...]}
+If NO spool symbols are found on this page, return: {"spool_symbols": []}
+
+IMPORTANT: Focus on the VISUAL flow path patterns shown by the arrows in the symbol diagrams.
+Two manufacturers may use different letter codes for the exact same hydraulic function —
+the symbol diagram is what matters for cross-referencing."""
+
+
+def extract_spool_symbols_from_pdf(pdf_path: str, company: str) -> list[dict]:
+    """Extract spool symbols from PDF pages using GPT-4o vision.
+
+    Renders each page as an image, sends to GPT-4o to identify hydraulic spool
+    symbol diagrams, and returns structured spool data with canonical patterns.
+
+    This catches spool information that text extraction misses because the symbols
+    are graphical (ISO 1219 hydraulic schematic diagrams).
+
+    Requires PyMuPDF (fitz) for page rendering.
+    """
+    if not HAS_PYMUPDF:
+        logger.warning("PyMuPDF not available — skipping vision spool extraction")
+        return []
+
+    import base64
+
+    try:
+        doc = _fitz.open(pdf_path)
+    except Exception as e:
+        logger.error("Failed to open PDF for spool vision: %s", e)
+        return []
+
+    all_spools = []
+    # Focus on pages likely to have spool symbols (typically later pages)
+    # Process all pages but log which ones yield results
+    total_pages = len(doc)
+    logger.info("Spool vision extraction: scanning %d pages in %s", total_pages, pdf_path)
+
+    for page_idx in range(total_pages):
+        try:
+            page = doc[page_idx]
+            # Render page as PNG at 150 DPI (good balance of quality vs size)
+            pix = page.get_pixmap(dpi=150)
+            image_bytes = pix.tobytes("png")
+
+            # Skip very small pages (probably blank or cover)
+            if len(image_bytes) < 5000:
+                continue
+
+            image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+            response = _get_client().chat.completions.create(
+                model=SPOOL_VISION_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": _SPOOL_VISION_PROMPT},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{image_b64}",
+                                    "detail": "high",
+                                },
+                            },
+                        ],
+                    }
+                ],
+                response_format={"type": "json_object"},
+                max_tokens=2000,
+                temperature=0.1,
+            )
+
+            content = response.choices[0].message.content.strip()
+            data = json.loads(content)
+            symbols = data.get("spool_symbols", [])
+
+            if symbols:
+                logger.info("Page %d: found %d spool symbols via vision", page_idx + 1, len(symbols))
+                for sym in symbols:
+                    if not isinstance(sym, dict) or not sym.get("spool_code"):
+                        continue
+                    sym["source_page"] = page_idx + 1
+                    sym["company"] = company
+                    sym["extraction_method"] = "vision"
+                    # Compute canonical pattern from the extracted flow paths
+                    sym["canonical_pattern"] = compute_canonical_pattern(
+                        sym.get("center_condition", ""),
+                        sym.get("solenoid_a_function", ""),
+                        sym.get("solenoid_b_function", ""),
+                    )
+                    all_spools.append(sym)
+
+        except Exception as e:
+            logger.warning("Spool vision extraction failed on page %d: %s", page_idx + 1, e)
+            continue
+
+    doc.close()
+
+    # Deduplicate by spool_code (keep the one with most data)
+    seen = {}
+    for s in all_spools:
+        code = s["spool_code"].strip().upper()
+        if code in seen:
+            existing = seen[code]
+            # Keep the one with a longer symbol_description (more detail)
+            if len(s.get("symbol_description", "")) > len(existing.get("symbol_description", "")):
+                seen[code] = s
+        else:
+            seen[code] = s
+
+    results = list(seen.values())
+    logger.info("Spool vision extraction total: %d unique spool symbols for %s",
+                len(results), company)
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Step 7: Cross-reference series extraction
+# ---------------------------------------------------------------------------
+
+
+def extract_cross_references_with_llm(
+    text: str, source_company: str = "Danfoss"
+) -> list[dict]:
+    """Extract series-level cross-reference mappings from a cross-reference PDF.
+
+    These documents map Danfoss/Vickers series prefixes to competitor equivalents.
+    For example: Danfoss "KFDG4V-3" ↔ Parker "D1FW" (proportional directional valve).
+
+    Returns a list of dicts with keys:
+        my_company_series, competitor_series, competitor_company, product_type, notes
+    """
+    if not text or not text.strip():
+        return []
+
+    prompt = f"""You are an expert at reading hydraulic product cross-reference documents.
+
+This document from {source_company} maps their product series to equivalent competitor series.
+Each row typically shows a {source_company} model code prefix alongside the competitor's equivalent prefix.
+
+Extract ALL series-level cross-reference mappings from the text below. For each mapping, provide:
+- "my_company_series": the {source_company}/Vickers/Danfoss series prefix (e.g. "KFDG4V-3", "DG4V-3", "KDG4V-3")
+- "competitor_series": the competitor's equivalent series prefix (e.g. "D1FW", "4WREE", "A10VSO")
+- "competitor_company": the competitor manufacturer name (e.g. "Parker", "Bosch Rexroth", "Eaton")
+- "product_type": what type of product this is (e.g. "Proportional Directional Valve", "Servo Valve", "Piston Pump")
+- "notes": any additional notes about the equivalence (compatibility notes, differences, etc.)
+
+IMPORTANT:
+- Extract the SERIES PREFIX only, not full model codes with all options
+- A single {source_company} series may map to multiple competitors — create one entry per competitor mapping
+- Include ALL mappings found in the document, even if some are partial
+- competitor_company should be the full official name (e.g. "Bosch Rexroth" not just "Rexroth")
+- If the document uses Vickers model codes, still set my_company_series to the Vickers code (the system knows Vickers is now Danfoss)
+
+Return a JSON object: {{"cross_references": [...]}}
+If no cross-references found, return {{"cross_references": []}}
+
+Text:
+{text[:40000]}"""
+
+    try:
+        response = _get_client().chat.completions.create(
+            model=EXTRACTION_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.1,
+        )
+        content = response.choices[0].message.content
+        logger.info("Cross-reference LLM response (first 2000 chars): %s", content[:2000])
+        data = json.loads(content)
+        refs = data.get("cross_references", [])
+
+        # Validate each entry has the required fields
+        valid = []
+        for ref in refs:
+            if not isinstance(ref, dict):
+                continue
+            if ref.get("my_company_series") and ref.get("competitor_series") and ref.get("competitor_company"):
+                valid.append(ref)
+            else:
+                logger.warning("Skipping incomplete cross-reference: %s", ref)
+
+        logger.info("Extracted %d cross-reference mappings from %s document",
+                     len(valid), source_company)
+        return valid
+
+    except Exception as e:
+        logger.error("Cross-reference extraction error: %s", e)
         return []

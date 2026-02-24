@@ -581,3 +581,304 @@ class TestCanonicalSpoolMatching:
         _, breakdown = db.spec_comparison(comp, cand)
         # design_number matches (5==5), flow_class doesn't — coverage should reflect this
         assert breakdown.spec_coverage > 0.0
+
+
+# ── Series Cross-Reference ────────────────────────────────────────────
+
+
+class TestSeriesCrossReference:
+    """Tests for the series_cross_reference table and lookup methods."""
+
+    def test_insert_and_lookup(self, db):
+        """Should insert a cross-reference and find it by competitor prefix."""
+        db.insert_series_cross_reference(
+            my_company_series="DG4V-3",
+            competitor_series="D1VW",
+            competitor_company="Parker",
+            product_type="Directional Valve",
+        )
+        results = db.lookup_series_by_competitor_prefix("D1VW004CNJW", "Parker")
+        assert len(results) >= 1
+        assert results[0]["my_company_series"] == "DG4V-3"
+
+    def test_prefix_match_not_exact(self, db):
+        """Lookup should match prefix, not require exact match."""
+        db.insert_series_cross_reference(
+            my_company_series="KFDG4V-3",
+            competitor_series="4WRE",
+            competitor_company="Bosch Rexroth",
+        )
+        results = db.lookup_series_by_competitor_prefix("4WREE6-04-3X", "Bosch Rexroth")
+        assert len(results) >= 1
+        assert results[0]["my_company_series"] == "KFDG4V-3"
+
+    def test_no_match_returns_empty(self, db):
+        """Should return empty list when no prefix matches."""
+        db.insert_series_cross_reference(
+            my_company_series="DG4V-3",
+            competitor_series="D1VW",
+            competitor_company="Parker",
+        )
+        results = db.lookup_series_by_competitor_prefix("XXXX-NOMATCH", "Parker")
+        assert results == []
+
+    def test_longest_prefix_first(self, db):
+        """Should return longest (most specific) prefix match first."""
+        db.insert_series_cross_reference(
+            my_company_series="DG4V-3",
+            competitor_series="D1V",
+            competitor_company="Parker",
+        )
+        db.insert_series_cross_reference(
+            my_company_series="DG4V-3S",
+            competitor_series="D1VW",
+            competitor_company="Parker",
+        )
+        results = db.lookup_series_by_competitor_prefix("D1VW004CNJW", "Parker")
+        assert len(results) == 2
+        # Most specific (D1VW) should come first
+        assert results[0]["competitor_series"] == "D1VW"
+
+    def test_company_filter(self, db):
+        """Should only return matches for the specified competitor company."""
+        db.insert_series_cross_reference(
+            my_company_series="DG4V-3",
+            competitor_series="D1VW",
+            competitor_company="Parker",
+        )
+        db.insert_series_cross_reference(
+            my_company_series="KFDG4V-3",
+            competitor_series="D1VW",
+            competitor_company="Bosch Rexroth",
+        )
+        results = db.lookup_series_by_competitor_prefix("D1VW004", "Parker")
+        assert len(results) == 1
+        assert results[0]["competitor_company"] == "Parker"
+
+    def test_get_all_cross_references(self, db):
+        """Should return all stored cross-references."""
+        db.insert_series_cross_reference(
+            my_company_series="DG4V-3", competitor_series="D1VW",
+            competitor_company="Parker",
+        )
+        db.insert_series_cross_reference(
+            my_company_series="KFDG4V", competitor_series="4WRE",
+            competitor_company="Bosch Rexroth",
+        )
+        all_refs = db.get_all_cross_references()
+        assert len(all_refs) == 2
+
+    def test_delete_by_source(self, db):
+        """Should delete cross-references from a specific source document."""
+        db.insert_series_cross_reference(
+            my_company_series="DG4V-3", competitor_series="D1VW",
+            competitor_company="Parker", source_document="xref.pdf",
+        )
+        db.insert_series_cross_reference(
+            my_company_series="KFDG4V", competitor_series="4WRE",
+            competitor_company="Bosch Rexroth", source_document="other.pdf",
+        )
+        db.delete_cross_references_by_source("xref.pdf")
+        remaining = db.get_all_cross_references()
+        assert len(remaining) == 1
+        assert remaining[0]["source_document"] == "other.pdf"
+
+    def test_lookup_without_company_filter(self, db):
+        """Should search all companies when competitor_company is None."""
+        db.insert_series_cross_reference(
+            my_company_series="DG4V-3", competitor_series="D1VW",
+            competitor_company="Parker",
+        )
+        results = db.lookup_series_by_competitor_prefix("D1VW004CNJW")
+        assert len(results) >= 1
+
+
+class TestSpoolTypeReference:
+    """Tests for the spool_type_reference table and CRUD methods."""
+
+    def test_insert_and_retrieve(self, db):
+        """Should insert a spool type reference and retrieve it."""
+        db.insert_spool_type_reference(
+            series_prefix="DG4V-3",
+            manufacturer="Danfoss",
+            spool_code="2A",
+            description="Closed center, standard crossover",
+            center_condition="All ports blocked",
+        )
+        refs = db.get_spool_type_references(series_prefix="DG4V-3", manufacturer="Danfoss")
+        assert len(refs) >= 1
+        assert refs[0]["spool_code"] == "2A"
+        assert refs[0]["center_condition"] == "All ports blocked"
+
+    def test_upsert_on_duplicate(self, db):
+        """Should update (not duplicate) on same (series, manufacturer, code)."""
+        db.insert_spool_type_reference(
+            series_prefix="DG4V-3", manufacturer="Danfoss", spool_code="0C",
+            description="Old description",
+        )
+        db.insert_spool_type_reference(
+            series_prefix="DG4V-3", manufacturer="Danfoss", spool_code="0C",
+            description="New description",
+        )
+        refs = db.get_spool_type_references(series_prefix="DG4V-3", manufacturer="Danfoss")
+        codes = [r["spool_code"] for r in refs if r["spool_code"] == "0C"]
+        assert len(codes) == 1
+
+    def test_fuzzy_series_match_stored_is_prefix(self, db):
+        """Stored 'DG4V' should match query for 'DG4V-3'."""
+        db.insert_spool_type_reference(
+            series_prefix="DG4V", manufacturer="Danfoss", spool_code="2A",
+        )
+        refs = db.get_spool_type_references(series_prefix="DG4V-3", manufacturer="Danfoss")
+        assert len(refs) >= 1
+        assert refs[0]["spool_code"] == "2A"
+
+    def test_fuzzy_series_match_query_is_prefix(self, db):
+        """Query for 'DG4V' should match stored 'DG4V-3'."""
+        db.insert_spool_type_reference(
+            series_prefix="DG4V-3", manufacturer="Danfoss", spool_code="6C",
+        )
+        refs = db.get_spool_type_references(series_prefix="DG4V", manufacturer="Danfoss")
+        assert len(refs) >= 1
+        assert refs[0]["spool_code"] == "6C"
+
+    def test_get_spool_codes_for_series(self, db):
+        """Should return sorted list of spool code strings."""
+        db.insert_spool_type_reference(
+            series_prefix="DG4V-3", manufacturer="Danfoss", spool_code="2A",
+        )
+        db.insert_spool_type_reference(
+            series_prefix="DG4V-3", manufacturer="Danfoss", spool_code="0C",
+        )
+        db.insert_spool_type_reference(
+            series_prefix="DG4V-3", manufacturer="Danfoss", spool_code="6C",
+        )
+        codes = db.get_spool_codes_for_series("DG4V-3", "Danfoss")
+        assert codes == ["0C", "2A", "6C"]
+
+    def test_bulk_insert(self, db):
+        """Should bulk insert multiple references, skipping duplicates."""
+        db.insert_spool_type_reference(
+            series_prefix="DG4V-3", manufacturer="Danfoss", spool_code="0C",
+        )
+        refs = [
+            {"series_prefix": "DG4V-3", "manufacturer": "Danfoss", "spool_code": "0C"},  # dupe
+            {"series_prefix": "DG4V-3", "manufacturer": "Danfoss", "spool_code": "2A"},
+            {"series_prefix": "DG4V-3", "manufacturer": "Danfoss", "spool_code": "6C"},
+        ]
+        count = db.bulk_insert_spool_type_references(refs)
+        assert count == 2  # 0C already existed
+        all_codes = db.get_spool_codes_for_series("DG4V-3", "Danfoss")
+        assert "0C" in all_codes
+        assert "2A" in all_codes
+        assert "6C" in all_codes
+
+    def test_delete_reference(self, db):
+        """Should delete a spool type reference by ID."""
+        db.insert_spool_type_reference(
+            series_prefix="DG4V-3", manufacturer="Danfoss", spool_code="2A",
+        )
+        refs = db.get_spool_type_references(series_prefix="DG4V-3", manufacturer="Danfoss")
+        ref_id = refs[0]["id"]
+        db.delete_spool_type_reference(ref_id)
+        remaining = db.get_spool_type_references(series_prefix="DG4V-3", manufacturer="Danfoss")
+        assert len(remaining) == 0
+
+    def test_manufacturer_isolation(self, db):
+        """Spool types for different manufacturers should not mix."""
+        db.insert_spool_type_reference(
+            series_prefix="DG4V-3", manufacturer="Danfoss", spool_code="2A",
+        )
+        db.insert_spool_type_reference(
+            series_prefix="4WE6", manufacturer="Bosch Rexroth", spool_code="D",
+        )
+        danfoss = db.get_spool_codes_for_series("DG4V-3", "Danfoss")
+        bosch = db.get_spool_codes_for_series("4WE6", "Bosch Rexroth")
+        assert "2A" in danfoss
+        assert "D" not in danfoss
+        assert "D" in bosch
+        assert "2A" not in bosch
+
+    def test_is_primary_default_false(self, db):
+        """New spool references should default to is_primary=0."""
+        db.insert_spool_type_reference(
+            series_prefix="DG4V-3", manufacturer="Danfoss", spool_code="2A",
+        )
+        refs = db.get_spool_type_references(series_prefix="DG4V-3", manufacturer="Danfoss")
+        assert refs[0].get("is_primary") == 0
+
+    def test_insert_with_is_primary(self, db):
+        """Should insert a spool type with is_primary=True."""
+        db.insert_spool_type_reference(
+            series_prefix="DG4V-3", manufacturer="Danfoss", spool_code="2A",
+            is_primary=True,
+        )
+        refs = db.get_spool_type_references(series_prefix="DG4V-3", manufacturer="Danfoss")
+        assert refs[0].get("is_primary") == 1
+
+    def test_update_spool_type_primary(self, db):
+        """Should toggle is_primary on an existing reference."""
+        db.insert_spool_type_reference(
+            series_prefix="DG4V-3", manufacturer="Danfoss", spool_code="2A",
+        )
+        refs = db.get_spool_type_references(series_prefix="DG4V-3", manufacturer="Danfoss")
+        ref_id = refs[0]["id"]
+        assert refs[0].get("is_primary") == 0
+
+        db.update_spool_type_primary(ref_id, True)
+        refs = db.get_spool_type_references(series_prefix="DG4V-3", manufacturer="Danfoss")
+        assert refs[0].get("is_primary") == 1
+
+        db.update_spool_type_primary(ref_id, False)
+        refs = db.get_spool_type_references(series_prefix="DG4V-3", manufacturer="Danfoss")
+        assert refs[0].get("is_primary") == 0
+
+    def test_get_primary_spool_codes(self, db):
+        """Should return only primary spool codes."""
+        db.insert_spool_type_reference(
+            series_prefix="DG4V-3", manufacturer="Danfoss", spool_code="2A", is_primary=True,
+        )
+        db.insert_spool_type_reference(
+            series_prefix="DG4V-3", manufacturer="Danfoss", spool_code="6C", is_primary=True,
+        )
+        db.insert_spool_type_reference(
+            series_prefix="DG4V-3", manufacturer="Danfoss", spool_code="0C", is_primary=False,
+        )
+        codes = db.get_primary_spool_codes("DG4V-3", "Danfoss")
+        assert codes == ["2A", "6C"]
+        assert "0C" not in codes
+
+    def test_get_primary_spool_codes_empty_when_none_primary(self, db):
+        """Should return empty list when no spools are marked primary."""
+        db.insert_spool_type_reference(
+            series_prefix="DG4V-3", manufacturer="Danfoss", spool_code="2A",
+        )
+        codes = db.get_primary_spool_codes("DG4V-3", "Danfoss")
+        assert codes == []
+
+    def test_set_all_spools_primary(self, db):
+        """Bulk set primary for specific codes."""
+        db.insert_spool_type_reference(
+            series_prefix="DG4V-3", manufacturer="Danfoss", spool_code="2A",
+        )
+        db.insert_spool_type_reference(
+            series_prefix="DG4V-3", manufacturer="Danfoss", spool_code="6C",
+        )
+        db.insert_spool_type_reference(
+            series_prefix="DG4V-3", manufacturer="Danfoss", spool_code="0C",
+        )
+        db.set_all_spools_primary(manufacturer="Danfoss", spool_codes=["2A", "6C"])
+        codes = db.get_primary_spool_codes("DG4V-3", "Danfoss")
+        assert codes == ["2A", "6C"]
+
+    def test_clear_all_spools_primary(self, db):
+        """Bulk clear primary flags."""
+        db.insert_spool_type_reference(
+            series_prefix="DG4V-3", manufacturer="Danfoss", spool_code="2A", is_primary=True,
+        )
+        db.insert_spool_type_reference(
+            series_prefix="DG4V-3", manufacturer="Danfoss", spool_code="6C", is_primary=True,
+        )
+        db.clear_all_spools_primary(manufacturer="Danfoss")
+        codes = db.get_primary_spool_codes("DG4V-3", "Danfoss")
+        assert codes == []
