@@ -5,6 +5,7 @@ Orchestrates: parse PDF → extract products → review → store in SQLite + Ch
 
 import logging
 import re
+import traceback
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -158,9 +159,11 @@ class IngestionPipeline:
         if full_text:
             try:
                 # Look up known spool codes for this company to inject into the prompt
+                print(f"[DEBUG] Starting ordering code extraction for {metadata.company}...")
                 known_spools = self.db.get_spool_codes_for_series(
                     metadata.category or "", metadata.company,
                 )
+                print(f"[DEBUG] Known spools: {known_spools}")
                 ordering_defs = extract_ordering_code_with_llm(
                     full_text, metadata.company, metadata.category or "",
                     known_spool_codes=known_spools if known_spools else None,
@@ -176,9 +179,11 @@ class IngestionPipeline:
                                         len(series_spools), definition.series)
 
                     # Look up primary (main runner) spool codes for this series
+                    print(f"[DEBUG] Looking up primary spools for series={definition.series}, company={metadata.company}")
                     primary_spools = self.db.get_primary_spool_codes(
                         definition.series, metadata.company,
                     )
+                    print(f"[DEBUG] Primary spools: {primary_spools}")
                     if primary_spools:
                         logger.info(
                             "Primary spool filter active for %s: %d codes: %s",
@@ -226,6 +231,7 @@ class IngestionPipeline:
 
             except Exception as e:
                 print(f"Error in ordering code extraction: {e}")
+                traceback.print_exc()
 
         # Step 5b: Deep spool function analysis (second-pass LLM)
         # Analyse the full text to understand spool symbols and functions
