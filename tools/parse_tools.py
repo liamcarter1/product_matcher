@@ -1423,15 +1423,35 @@ model codes are constructed from positional segments.
 Read the diagram and ALL associated description tables. Extract the
 COMPLETE ordering code structure:
 
-1. The model code template (e.g., "DG4V - 3 - __ - __ - __ - 60")
+1. The model code template using {01}, {02}, {03}, etc. as placeholders for each position.
+   Include separators exactly as they appear (dashes "-", slashes "/", dots ".").
+   Example: "{01}{02}{03}{04}{05}{06}{07}-{08}{09}/{10}{11}{12}"
+   Another example: "{01}-{02}-{03}-{04}-{05}"
+   Do NOT use underscores, asterisks, or blanks — ONLY use {01}, {02}, etc.
 2. Each numbered position with ALL available option codes
 3. Which positions are fixed vs. variable (customer selects)
-4. Separators between positions (dashes, slashes, etc.)
+4. Separators between positions (dashes, slashes, etc.) — put them literally in the template
 
-For spool type segments:
-- Typically 10-30+ options for directional valve series
-- Read EVERY spool option from the diagram/table
-- maps_to_field: "spool_type", maps_to_value: CODE ONLY (e.g. "2A", not "2A - all ports open")
+SPOOL TYPE / VALVE FUNCTION SEGMENT — CRITICAL:
+The spool type (also called valve function, spool code, or center condition) is one of the most important
+segments in a directional valve ordering code. It defines how ports connect in each valve position.
+You MUST map this segment to maps_to_field: "spool_type".
+
+Spool type codes vary by manufacturer:
+- Danfoss/Vickers: letter codes like "D", "E", "H", "J", "K", "L", "M", "S", "T", "W", or compound
+  codes like "2A", "2B", "6C", "7C", "8C", "33C", "34C", "60B".
+- Bosch Rexroth: letter codes like "D", "E", "EA", "H", "J", "L", "R", "U", "W".
+- Parker: numeric codes like "01", "02", "06", "11", "12", "20", "30", "60", "70".
+- MOOG: letter codes embedded in the model number.
+
+The maps_to_value for spool type must be ONLY the code itself, e.g.: "D", "2A", "2C", "H", "01".
+Do NOT include the functional description in maps_to_value for spool_type.
+
+SPOOL OPTION COUNT — IMPORTANT:
+For standard directional valve series (DG4V, 4WE, D1VW, D*FW, etc.), the spool type segment
+typically has 10-30+ different options. If you find fewer than 5 spool type options for a
+directional valve series, you are VERY LIKELY MISSING options. Look more carefully through the
+entire document for spool type / valve function tables listing all available codes.
 
 CRITICAL — BLANK/OPTIONAL POSITIONS:
 Some panels in the model code breakdown diagram may appear BLANK or show no default code.
@@ -1447,8 +1467,16 @@ SEGMENT NAMING RULES:
 - EVERY segment MUST have maps_to_field set to a known spec field or the segment_name itself
 - Known fields: actuator_type, body_material, bore_diameter_mm, coil_connector, coil_type, coil_voltage, displacement_cc, fluid_type, max_flow_lpm, max_pressure_bar, mounting, mounting_pattern, num_ports, num_positions, operating_temp_max_c, operating_temp_min_c, port_size, port_type, rod_diameter_mm, seal_material, speed_rpm_max, spool_type, stroke_mm, subcategory, valve_size, viscosity_range_cst, weight_kg
 - You may also use ANY descriptive snake_case name for non-standard fields
+- Include ALL positions, both fixed and variable — NEVER skip a position number
+- For "no code" options (where nothing appears in the model code), set "code" to "" (empty string)
+- The total number of segments MUST match the total number of positions shown in the breakdown diagram
 
-Return JSON: {"ordering_codes": [{"series": "...", "product_name": "...", "category": "...", "code_template": "...", "segments": [...], "shared_specs": {...}}]}
+CODE TEMPLATE FORMAT — CRITICAL:
+The "code_template" field MUST use {01}, {02}, {03}, etc. as position placeholders.
+Each placeholder number corresponds to the segment position number.
+Example for "DG4V-3-2A-M-FW-B5-60": the template would be "{01}-{02}-{03}-{04}-{05}-{06}-{07}"
+
+Return JSON: {"ordering_codes": [{"series": "...", "product_name": "...", "category": "...", "code_template": "template using {01},{02},etc.", "segments": [...], "shared_specs": {...}}]}
 Each segment: {"position": N, "segment_name": "...", "is_fixed": bool, "separator_before": "", "options": [{"code": "...", "description": "...", "maps_to_field": "...", "maps_to_value": ...}]}
 
 If no ordering code tables found, return {"ordering_codes": []}"""
