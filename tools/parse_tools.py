@@ -1321,8 +1321,9 @@ def _is_graphics_heavy_pdf(pages: list[dict], total_page_count: int) -> bool:
     total_chars = sum(len(p["text"]) for p in pages)
     avg_chars = total_chars / total_page_count
 
-    # Count sparse pages (less than 200 chars of useful text)
-    sparse_threshold = 200
+    # Count sparse pages (less than 300 chars of useful text — pdfplumber
+    # supplementary extraction inflates counts with scattered labels)
+    sparse_threshold = 300
     sparse_count = 0
     for page_num in range(1, total_page_count + 1):
         page_text = ""
@@ -1335,7 +1336,10 @@ def _is_graphics_heavy_pdf(pages: list[dict], total_page_count: int) -> bool:
 
     sparse_ratio = sparse_count / total_page_count
 
-    is_heavy = avg_chars < 200 and sparse_ratio > 0.5
+    # Classify as graphics-heavy if EITHER condition is met:
+    #   1. Very low average text (< 500 chars/page) AND most pages are sparse (> 40%)
+    #   2. Almost all pages are sparse (> 70%) regardless of average
+    is_heavy = (avg_chars < 500 and sparse_ratio > 0.4) or sparse_ratio > 0.7
 
     logger.info(
         "Graphics-heavy detection: avg_chars=%.0f, sparse_pages=%d/%d (%.0f%%), "

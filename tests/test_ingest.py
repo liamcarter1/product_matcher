@@ -1049,15 +1049,42 @@ class TestGraphicsHeavyBranching:
         mock_text_ordering, mock_vision_ordering,
         pipeline, metadata,
     ):
-        """When PDF is NOT graphics-heavy, text extraction should be used."""
+        """When PDF is NOT graphics-heavy, text extraction is used first.
+        If text finds nothing on a multi-page PDF, vision retry also fires."""
+        mock_text_ordering.return_value = []
+        mock_vision_ordering.return_value = []
+
+        pipeline.process_pdf("test.pdf", metadata)
+
+        # Text should be called first
+        mock_text_ordering.assert_called_once()
+        # Vision retry should also fire since text found nothing on a 14-page PDF
+        mock_vision_ordering.assert_called_once()
+
+    @patch("ingest.extract_ordering_code_from_images")
+    @patch("ingest.extract_ordering_code_with_llm")
+    @patch("ingest._is_graphics_heavy_pdf", return_value=False)
+    @patch("ingest._get_pdf_page_count", return_value=2)
+    @patch("ingest.extract_text_from_pdf", return_value=[{"page": 1, "text": "x" * 5000}])
+    @patch("ingest.extract_tables_from_pdf", return_value=[])
+    @patch("ingest.extract_products_with_llm", return_value=[])
+    @patch("ingest.extract_model_code_patterns_with_llm", return_value=[])
+    @patch("ingest.analyze_spool_functions", return_value=[])
+    @patch("ingest.extract_spool_symbols_from_pdf", return_value=[])
+    def test_no_vision_retry_for_short_pdf(
+        self, mock_spool_vis, mock_spool_analysis,
+        mock_patterns, mock_llm_products, mock_tables, mock_text,
+        mock_page_count, mock_is_heavy,
+        mock_text_ordering, mock_vision_ordering,
+        pipeline, metadata,
+    ):
+        """Short PDFs (< 3 pages) should NOT trigger vision retry — only text."""
         mock_text_ordering.return_value = []
 
         pipeline.process_pdf("test.pdf", metadata)
 
-        # Vision should NOT be called
-        mock_vision_ordering.assert_not_called()
-        # Text should be called
         mock_text_ordering.assert_called_once()
+        mock_vision_ordering.assert_not_called()
         assert pipeline._last_extraction_method == "text"
 
     @patch("ingest.extract_ordering_code_from_images")

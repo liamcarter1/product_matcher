@@ -196,6 +196,20 @@ class IngestionPipeline:
                     full_text, metadata.company, metadata.category or "",
                     known_spool_codes=known_spools if known_spools else None,
                 )
+                # Vision retry: if text extraction found NO ordering codes and
+                # the PDF has enough pages, try vision as a fallback. This catches
+                # PDFs that aren't flagged as graphics-heavy but still have their
+                # ordering codes rendered as vector graphics.
+                if not ordering_defs and total_page_count >= 3:
+                    print("[DEBUG] Text ordering code extraction found nothing on "
+                          f"{total_page_count}-page PDF, retrying with VISION")
+                    ordering_defs = extract_ordering_code_from_images(
+                        pdf_path, metadata.company, metadata.category or "",
+                        known_spool_codes=known_spools if known_spools else None,
+                    )
+                    if ordering_defs:
+                        self._last_extraction_method = "vision (text retry)"
+                        print(f"[DEBUG] Vision retry found {len(ordering_defs)} definitions!")
 
             for definition in ordering_defs:
                 # Also look up spools by specific series (more precise)

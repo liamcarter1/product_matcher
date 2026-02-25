@@ -1026,12 +1026,25 @@ class TestIsGraphicsHeavyPdf:
         assert _is_graphics_heavy_pdf(pages, 10) is True
 
     def test_borderline_stays_text(self):
-        """Average exactly at 200 chars/page should NOT be graphics-heavy (< is strict)."""
+        """Average at 500 chars/page with most pages having content should NOT be graphics-heavy."""
         pages = [
-            {"page": 1, "text": "x" * 200},
-            {"page": 2, "text": "y" * 200},
+            {"page": 1, "text": "x" * 500},
+            {"page": 2, "text": "y" * 500},
         ]
         assert _is_graphics_heavy_pdf(pages, 2) is False
+
+    def test_danfoss_style_pdf_detected(self):
+        """Typical Danfoss datasheet: 14 pages, ~100 chars extracted per page average,
+        with pdfplumber sometimes inflating a few pages to 200-400 chars."""
+        pages = [
+            {"page": 1, "text": "x" * 400},   # cover page has some text
+            {"page": 2, "text": "y" * 250},    # pdfplumber picked up scattered labels
+            {"page": 3, "text": "DG4V-3"},     # ordering code page - almost no text
+            {"page": 4, "text": "Spool"},       # spool page - almost no text
+            {"page": 5, "text": "z" * 150},    # specs page - minimal text
+        ]
+        # 5 pages from a 14-page PDF. Pages 6-14 have no text at all.
+        assert _is_graphics_heavy_pdf(pages, 14) is True
 
 
 # ── _parse_ordering_code_response ──────────────────────────────────
