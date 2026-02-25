@@ -771,60 +771,7 @@ Also include any ADDITIONAL spool types you find in the document that are NOT in
         data = json.loads(content)
         raw_codes = data.get("ordering_codes", [])
 
-        definitions = []
-        for raw in raw_codes:
-            try:
-                segments = []
-                for seg_data in raw.get("segments", []):
-                    seg_name = seg_data.get("segment_name", "")
-                    # Defensive fallback: auto-generate segment_name from description if missing
-                    if not seg_name:
-                        desc = ""
-                        opts = seg_data.get("options", [])
-                        if opts:
-                            desc = opts[0].get("description", "")
-                        if not desc:
-                            desc = f"position_{seg_data.get('position', 0)}"
-                        # Convert description to snake_case
-                        seg_name = re.sub(r'[^a-z0-9]+', '_', desc.lower()).strip('_')[:40]
-                        logger.warning("Segment at position %d had no segment_name, "
-                                       "auto-generated: '%s'", seg_data.get("position", 0), seg_name)
-                        seg_data["segment_name"] = seg_name
-
-                    # Defensive fallback: ensure maps_to_field is set on all options
-                    for opt in seg_data.get("options", []):
-                        if not opt.get("maps_to_field"):
-                            opt["maps_to_field"] = seg_name
-                            if opt.get("maps_to_value") is None:
-                                opt["maps_to_value"] = opt.get("description", opt.get("code", ""))
-                            logger.warning("Option code '%s' had no maps_to_field, "
-                                           "set to segment_name: '%s'",
-                                           opt.get("code", ""), seg_name)
-
-                    segments.append(OrderingCodeSegment(
-                        position=seg_data.get("position", 0),
-                        segment_name=seg_name,
-                        is_fixed=seg_data.get("is_fixed", True),
-                        separator_before=seg_data.get("separator_before", ""),
-                        options=seg_data.get("options", []),
-                    ))
-
-                definition = OrderingCodeDefinition(
-                    company=company,
-                    series=raw.get("series", ""),
-                    product_name=raw.get("product_name", ""),
-                    category=raw.get("category", category),
-                    code_template=raw.get("code_template", ""),
-                    segments=segments,
-                    shared_specs=raw.get("shared_specs", {}),
-                )
-                if definition.series and definition.segments:
-                    definitions.append(definition)
-            except Exception as e:
-                print(f"Error parsing ordering code definition: {e}")
-                continue
-
-        return definitions
+        return _parse_ordering_code_response(raw_codes, company, category)
     except Exception as e:
         print(f"LLM ordering code extraction error: {e}")
         return []
@@ -1171,8 +1118,11 @@ SPOOL_VISION_MODEL = "gpt-4o"
 
 _SPOOL_VISION_PROMPT = """You are an expert hydraulic engineer analysing a page from a product datasheet.
 
-This page may contain HYDRAULIC SPOOL SYMBOL DIAGRAMS. These are standardised schematic diagrams
-(ISO 1219) showing valve spool positions with flow path arrows, blocked ports, and check valves.
+This page may contain HYDRAULIC SPOOL SYMBOL DIAGRAMS and/or a SPOOL OPTIONS TABLE.
+
+## SPOOL SYMBOL DIAGRAMS
+These are standardised schematic diagrams (ISO 1219) showing valve spool positions with
+flow path arrows, blocked ports, and check valves.
 
 Each spool symbol shows:
 - A rectangle divided into sections (one section per valve switching position)
@@ -1180,7 +1130,17 @@ Each spool symbol shows:
 - Blocked ports shown as T-symbols or dead-end lines
 - A letter/number CODE labelling the symbol (e.g. "D", "E", "H", "2A", "01")
 
-Your task: Identify ALL spool symbol diagrams on this page and for each one extract:
+## SPOOL OPTIONS TABLE
+Some pages contain a TABLE listing all available spool types with columns like:
+- Spool code / type designation
+- Center condition description
+- Active (solenoid energised) function
+- Crossover function during transition
+
+If you see a spool options table, extract ALL rows from it.
+
+## Your task:
+Identify ALL spool symbols AND/OR table rows on this page. For each one extract:
 
 1. "spool_code": the letter/number designation (e.g. "D", "2A", "H", "01", "EA")
 2. "center_condition": what happens in the center/neutral position
@@ -1191,16 +1151,17 @@ Your task: Identify ALL spool symbol diagrams on this page and for each one extr
 6. "symbol_description": describe the visual symbol pattern in detail (arrows, blocked ports,
    flow paths in each position from left to right). This text description of the VISUAL SYMBOL
    will be used to match equivalent spool functions across different manufacturers regardless
-   of their letter codes.
+   of their letter codes. If from a table (no diagram), describe the functional behavior.
 
 For 2-position valves, set center_condition to "N/A (2-position valve)" and only fill solenoid_a_function.
 
 Return valid JSON: {"spool_symbols": [...]}
-If NO spool symbols are found on this page, return: {"spool_symbols": []}
+If NO spool symbols or spool tables are found on this page, return: {"spool_symbols": []}
 
 IMPORTANT: Focus on the VISUAL flow path patterns shown by the arrows in the symbol diagrams.
 Two manufacturers may use different letter codes for the exact same hydraulic function —
-the symbol diagram is what matters for cross-referencing."""
+the symbol diagram is what matters for cross-referencing.
+If both diagrams AND a table are present, extract from BOTH but deduplicate by spool_code."""
 
 
 def extract_spool_symbols_from_pdf(pdf_path: str, company: str) -> list[dict]:
@@ -1309,6 +1270,299 @@ def extract_spool_symbols_from_pdf(pdf_path: str, company: str) -> list[dict]:
     logger.info("Spool vision extraction total: %d unique spool symbols for %s",
                 len(results), company)
     return results
+
+
+# ---------------------------------------------------------------------------
+# Step 6b: Graphics-heavy PDF detection + Vision ordering code extraction
+# ---------------------------------------------------------------------------
+
+
+def _get_pdf_page_count(pdf_path: str) -> int:
+    """Return the number of pages in a PDF."""
+    if HAS_PYMUPDF:
+        try:
+            doc = _fitz.open(pdf_path)
+            count = len(doc)
+            doc.close()
+            return count
+        except Exception:
+            pass
+    # Fallback to pypdf
+    try:
+        from pypdf import PdfReader
+        return len(PdfReader(pdf_path).pages)
+    except Exception:
+        return 0
+
+
+def _is_graphics_heavy_pdf(pages: list[dict], total_page_count: int) -> bool:
+    """Detect if a PDF is predominantly vector-graphic-based.
+
+    Graphics-heavy PDFs (e.g. Danfoss datasheets) render ordering code
+    diagrams, spool tables, and specs as vector graphics with very little
+    extractable text.  This function checks the average text yield per page
+    and classifies the PDF accordingly.
+
+    Args:
+        pages: Output from extract_text_from_pdf() — list of {page, text}.
+        total_page_count: Total page count in the PDF (from _get_pdf_page_count).
+
+    Returns:
+        True if the PDF is likely graphics-heavy and needs vision extraction.
+    """
+    if total_page_count < 2:
+        return False  # Very short PDFs are probably text-only or single-page
+
+    if not pages:
+        # No text at all — definitely graphics-heavy
+        return total_page_count >= 2
+
+    # Calculate average chars per page (across ALL pages, including blanks)
+    total_chars = sum(len(p["text"]) for p in pages)
+    avg_chars = total_chars / total_page_count
+
+    # Count sparse pages (less than 200 chars of useful text)
+    sparse_threshold = 200
+    sparse_count = 0
+    for page_num in range(1, total_page_count + 1):
+        page_text = ""
+        for p in pages:
+            if p["page"] == page_num:
+                page_text = p["text"]
+                break
+        if len(page_text) < sparse_threshold:
+            sparse_count += 1
+
+    sparse_ratio = sparse_count / total_page_count
+
+    is_heavy = avg_chars < 200 and sparse_ratio > 0.5
+
+    logger.info(
+        "Graphics-heavy detection: avg_chars=%.0f, sparse_pages=%d/%d (%.0f%%), "
+        "result=%s",
+        avg_chars, sparse_count, total_page_count, sparse_ratio * 100,
+        "GRAPHICS-HEAVY" if is_heavy else "text-ok",
+    )
+
+    return is_heavy
+
+
+def _parse_ordering_code_response(
+    raw_codes: list[dict], company: str, category: str,
+) -> list[OrderingCodeDefinition]:
+    """Parse raw ordering code JSON dicts into OrderingCodeDefinition objects.
+
+    Shared parser used by both text-based (extract_ordering_code_with_llm)
+    and vision-based (extract_ordering_code_from_images) extraction paths.
+    """
+    definitions = []
+    for raw in raw_codes:
+        try:
+            segments = []
+            for seg_data in raw.get("segments", []):
+                seg_name = seg_data.get("segment_name", "")
+                # Defensive fallback: auto-generate segment_name from description if missing
+                if not seg_name:
+                    desc = ""
+                    opts = seg_data.get("options", [])
+                    if opts:
+                        desc = opts[0].get("description", "")
+                    if not desc:
+                        desc = f"position_{seg_data.get('position', 0)}"
+                    # Convert description to snake_case
+                    seg_name = re.sub(r'[^a-z0-9]+', '_', desc.lower()).strip('_')[:40]
+                    logger.warning("Segment at position %d had no segment_name, "
+                                   "auto-generated: '%s'", seg_data.get("position", 0), seg_name)
+                    seg_data["segment_name"] = seg_name
+
+                # Defensive fallback: ensure maps_to_field is set on all options
+                for opt in seg_data.get("options", []):
+                    if not opt.get("maps_to_field"):
+                        opt["maps_to_field"] = seg_name
+                        if opt.get("maps_to_value") is None:
+                            opt["maps_to_value"] = opt.get("description", opt.get("code", ""))
+                        logger.warning("Option code '%s' had no maps_to_field, "
+                                       "set to segment_name: '%s'",
+                                       opt.get("code", ""), seg_name)
+
+                segments.append(OrderingCodeSegment(
+                    position=seg_data.get("position", 0),
+                    segment_name=seg_name,
+                    is_fixed=seg_data.get("is_fixed", True),
+                    separator_before=seg_data.get("separator_before", ""),
+                    options=seg_data.get("options", []),
+                ))
+
+            definition = OrderingCodeDefinition(
+                company=company,
+                series=raw.get("series", ""),
+                product_name=raw.get("product_name", ""),
+                category=raw.get("category", category),
+                code_template=raw.get("code_template", ""),
+                segments=segments,
+                shared_specs=raw.get("shared_specs", {}),
+            )
+            if definition.series and definition.segments:
+                definitions.append(definition)
+        except Exception as e:
+            print(f"Error parsing ordering code definition: {e}")
+            continue
+
+    return definitions
+
+
+# Vision prompt for ordering code diagram extraction
+_ORDERING_CODE_VISION_PROMPT = """You are an expert hydraulic engineer reading a product datasheet.
+These pages contain an ORDERING CODE BREAKDOWN DIAGRAM showing how
+model codes are constructed from positional segments.
+
+Read the diagram and ALL associated description tables. Extract the
+COMPLETE ordering code structure:
+
+1. The model code template (e.g., "DG4V - 3 - __ - __ - __ - 60")
+2. Each numbered position with ALL available option codes
+3. Which positions are fixed vs. variable (customer selects)
+4. Separators between positions (dashes, slashes, etc.)
+
+For spool type segments:
+- Typically 10-30+ options for directional valve series
+- Read EVERY spool option from the diagram/table
+- maps_to_field: "spool_type", maps_to_value: CODE ONLY (e.g. "2A", not "2A - all ports open")
+
+CRITICAL — BLANK/OPTIONAL POSITIONS:
+Some panels in the model code breakdown diagram may appear BLANK or show no default code.
+These blank panels are NOT to be skipped. They represent optional or variable positions.
+You MUST:
+1. Note the numbered position of the blank panel (e.g. position 7)
+2. Find the CORRESPONDING numbered description in the description table/list nearby
+3. Extract ALL the option codes and descriptions listed for that position
+4. Include the position as a variable segment with is_fixed=false and all its options
+
+SEGMENT NAMING RULES:
+- EVERY segment MUST have a meaningful "segment_name" in snake_case
+- EVERY segment MUST have maps_to_field set to a known spec field or the segment_name itself
+- Known fields: actuator_type, body_material, bore_diameter_mm, coil_connector, coil_type, coil_voltage, displacement_cc, fluid_type, max_flow_lpm, max_pressure_bar, mounting, mounting_pattern, num_ports, num_positions, operating_temp_max_c, operating_temp_min_c, port_size, port_type, rod_diameter_mm, seal_material, speed_rpm_max, spool_type, stroke_mm, subcategory, valve_size, viscosity_range_cst, weight_kg
+- You may also use ANY descriptive snake_case name for non-standard fields
+
+Return JSON: {"ordering_codes": [{"series": "...", "product_name": "...", "category": "...", "code_template": "...", "segments": [...], "shared_specs": {...}}]}
+Each segment: {"position": N, "segment_name": "...", "is_fixed": bool, "separator_before": "", "options": [{"code": "...", "description": "...", "maps_to_field": "...", "maps_to_value": ...}]}
+
+If no ordering code tables found, return {"ordering_codes": []}"""
+
+
+def extract_ordering_code_from_images(
+    pdf_path: str,
+    company: str,
+    category: str = "",
+    known_spool_codes: list[str] = None,
+    target_pages: list[int] = None,
+    dpi: int = 200,
+) -> list[OrderingCodeDefinition]:
+    """Extract ordering code breakdown from PDF pages using GPT-4o vision.
+
+    Renders target pages as PNG images and sends them in a single GPT-4o
+    multi-image call for cross-page context. Designed for graphics-heavy
+    PDFs where text extraction yields little usable content.
+
+    Args:
+        pdf_path: Path to the PDF file.
+        company: Manufacturer name.
+        category: Product category hint.
+        known_spool_codes: Spool codes to inject as reference.
+        target_pages: 0-indexed page numbers to render. Defaults to pages 1-5 (0-indexed).
+        dpi: Render resolution. Higher = better OCR but larger tokens.
+
+    Returns:
+        List of OrderingCodeDefinition objects (same format as text-based extraction).
+    """
+    if not HAS_PYMUPDF:
+        logger.warning("PyMuPDF not available — cannot do vision ordering code extraction")
+        return []
+
+    import base64
+
+    try:
+        doc = _fitz.open(pdf_path)
+    except Exception as e:
+        logger.error("Failed to open PDF for vision ordering code: %s", e)
+        return []
+
+    total_pages = len(doc)
+
+    # Default: pages 1-5 (0-indexed) — ordering codes are usually in the first few pages
+    if target_pages is None:
+        target_pages = list(range(min(5, total_pages)))
+
+    # Render pages to PNG
+    images_b64 = []
+    for page_idx in target_pages:
+        if page_idx >= total_pages:
+            continue
+        try:
+            page = doc[page_idx]
+            pix = page.get_pixmap(dpi=dpi)
+            image_bytes = pix.tobytes("png")
+            if len(image_bytes) < 5000:
+                continue  # Skip blank/tiny pages
+            images_b64.append(base64.b64encode(image_bytes).decode("utf-8"))
+            logger.info("Rendered page %d at %d DPI (%d bytes)", page_idx + 1, dpi, len(image_bytes))
+        except Exception as e:
+            logger.warning("Failed to render page %d: %s", page_idx + 1, e)
+
+    doc.close()
+
+    if not images_b64:
+        logger.warning("No pages rendered for vision ordering code extraction")
+        return []
+
+    # Build the prompt with optional spool reference
+    prompt = _ORDERING_CODE_VISION_PROMPT
+    if known_spool_codes:
+        codes_str = ", ".join(f'"{c}"' for c in sorted(known_spool_codes))
+        prompt += f"""
+
+REFERENCE DATA — KNOWN SPOOL TYPES:
+For {company} products, these spool codes are KNOWN to exist: {codes_str}
+Ensure ALL of these appear as spool segment options. Also include any ADDITIONAL
+spool types visible in the diagram that are NOT in this list."""
+
+    # Build multi-image message content
+    content = [{"type": "text", "text": prompt}]
+    for img_b64 in images_b64:
+        content.append({
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:image/png;base64,{img_b64}",
+                "detail": "high",
+            },
+        })
+
+    try:
+        response = _get_client().chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": content}],
+            response_format={"type": "json_object"},
+            max_tokens=4096,
+            temperature=0.1,
+        )
+
+        raw_content = response.choices[0].message.content
+        logger.info("Vision ordering code response (first 2000 chars): %s", raw_content[:2000])
+        data = json.loads(raw_content)
+        raw_codes = data.get("ordering_codes", [])
+
+        definitions = _parse_ordering_code_response(raw_codes, company, category)
+        logger.info("Vision ordering code extraction: %d definitions from %d pages",
+                     len(definitions), len(images_b64))
+        print(f"[DEBUG] Vision ordering code extraction: {len(definitions)} definitions "
+              f"from {len(images_b64)} pages")
+
+        return definitions
+
+    except Exception as e:
+        logger.error("Vision ordering code extraction error: %s", e)
+        print(f"[DEBUG] Vision ordering code extraction error: {e}")
+        return []
 
 
 # ---------------------------------------------------------------------------

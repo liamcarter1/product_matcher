@@ -1,7 +1,7 @@
 """
 Tests for tools/parse_tools.py — PDF parsing and extraction utilities.
 Covers: _parse_numeric_if_possible, assemble_model_code, generate_products_from_ordering_code,
-table_rows_to_products, HEADER_MAPPINGS, and LLM prompt validation.
+table_rows_to_products, HEADER_MAPPINGS, LLM prompt validation, and vision pipeline.
 """
 
 import pytest
@@ -19,6 +19,10 @@ from tools.parse_tools import (
     compute_canonical_pattern,
     extract_spool_symbols_from_pdf,
     extract_cross_references_with_llm,
+    extract_ordering_code_from_images,
+    _is_graphics_heavy_pdf,
+    _get_pdf_page_count,
+    _parse_ordering_code_response,
     HEADER_MAPPINGS,
     _VALID_SPEC_FIELDS,
     MAX_COMBINATIONS,
@@ -972,3 +976,242 @@ class TestSelectOrderingCodeText:
         result = _select_ordering_code_text(text, max_chars=40000)
         assert "Ordering Code" in result
         assert "Spool Type Table" in result
+
+
+# ── _is_graphics_heavy_pdf ─────────────────────────────────────────
+
+
+class TestIsGraphicsHeavyPdf:
+    """Tests for graphics-heavy PDF detection."""
+
+    def test_text_rich_pdf_returns_false(self):
+        """A PDF with plenty of text per page should NOT be classified as graphics-heavy."""
+        pages = [
+            {"page": 1, "text": "x" * 500},
+            {"page": 2, "text": "y" * 600},
+            {"page": 3, "text": "z" * 700},
+        ]
+        assert _is_graphics_heavy_pdf(pages, 3) is False
+
+    def test_sparse_pdf_returns_true(self):
+        """A multi-page PDF with very little text should be classified as graphics-heavy."""
+        pages = [
+            {"page": 1, "text": "Title"},
+            {"page": 2, "text": ""},
+            {"page": 3, "text": "DG4V-3"},
+        ]
+        assert _is_graphics_heavy_pdf(pages, 10) is True
+
+    def test_single_page_pdf_returns_false(self):
+        """Very short PDFs (1 page) should not trigger graphics-heavy detection."""
+        pages = [{"page": 1, "text": "Short"}]
+        assert _is_graphics_heavy_pdf(pages, 1) is False
+
+    def test_empty_pages_list_with_multi_page(self):
+        """No text extracted at all from a multi-page PDF → graphics-heavy."""
+        assert _is_graphics_heavy_pdf([], 5) is True
+
+    def test_empty_pages_list_single_page(self):
+        """No text from a single-page PDF → NOT graphics-heavy (just a cover)."""
+        assert _is_graphics_heavy_pdf([], 1) is False
+
+    def test_mixed_pages_below_threshold(self):
+        """Some pages have text, but overall average is too low."""
+        pages = [
+            {"page": 1, "text": "x" * 300},  # decent text
+            {"page": 2, "text": "y" * 50},    # sparse
+            {"page": 3, "text": ""},           # empty
+        ]
+        # 3 pages from a 10-page PDF: avg = 350/10 = 35 chars/page
+        assert _is_graphics_heavy_pdf(pages, 10) is True
+
+    def test_borderline_stays_text(self):
+        """Average exactly at 200 chars/page should NOT be graphics-heavy (< is strict)."""
+        pages = [
+            {"page": 1, "text": "x" * 200},
+            {"page": 2, "text": "y" * 200},
+        ]
+        assert _is_graphics_heavy_pdf(pages, 2) is False
+
+
+# ── _parse_ordering_code_response ──────────────────────────────────
+
+
+class TestParseOrderingCodeResponse:
+    """Tests for the shared ordering code JSON parser."""
+
+    def test_parses_valid_response(self):
+        """Should parse a well-formed ordering code response into definitions."""
+        raw = [{
+            "series": "DG4V-3",
+            "product_name": "Directional Valve",
+            "category": "directional_valves",
+            "code_template": "{01}-{02}-{03}",
+            "segments": [
+                {
+                    "position": 1, "segment_name": "series_code",
+                    "is_fixed": True, "separator_before": "",
+                    "options": [{"code": "DG4V", "description": "Series", "maps_to_field": "series_code", "maps_to_value": "DG4V"}],
+                },
+                {
+                    "position": 2, "segment_name": "spool_type",
+                    "is_fixed": False, "separator_before": "-",
+                    "options": [
+                        {"code": "2A", "description": "All ports blocked", "maps_to_field": "spool_type", "maps_to_value": "2A"},
+                        {"code": "6C", "description": "P to T, A&B blocked", "maps_to_field": "spool_type", "maps_to_value": "6C"},
+                    ],
+                },
+            ],
+            "shared_specs": {"max_pressure_bar": 315},
+        }]
+        result = _parse_ordering_code_response(raw, "Danfoss", "directional_valves")
+        assert len(result) == 1
+        defn = result[0]
+        assert defn.series == "DG4V-3"
+        assert defn.company == "Danfoss"
+        assert len(defn.segments) == 2
+        assert defn.segments[1].segment_name == "spool_type"
+        assert len(defn.segments[1].options) == 2
+
+    def test_auto_generates_segment_name(self):
+        """Should auto-generate segment_name when LLM omits it."""
+        raw = [{
+            "series": "4WE6",
+            "product_name": "Valve",
+            "category": "directional_valves",
+            "code_template": "{01}",
+            "segments": [{
+                "position": 1, "segment_name": "",
+                "is_fixed": True, "separator_before": "",
+                "options": [{"code": "4WE6", "description": "4-way valve size 6"}],
+            }],
+        }]
+        result = _parse_ordering_code_response(raw, "Rexroth", "")
+        assert len(result) == 1
+        seg = result[0].segments[0]
+        assert seg.segment_name != ""
+        # Should be auto-generated from description
+        assert "4" in seg.segment_name or "way" in seg.segment_name
+
+    def test_skips_entries_without_series(self):
+        """Entries without a series should be skipped."""
+        raw = [{"series": "", "product_name": "Unknown", "segments": []}]
+        result = _parse_ordering_code_response(raw, "X", "")
+        assert result == []
+
+    def test_handles_empty_list(self):
+        """Empty input should produce empty output."""
+        assert _parse_ordering_code_response([], "X", "") == []
+
+
+# ── extract_ordering_code_from_images ──────────────────────────────
+
+
+class TestExtractOrderingCodeFromImages:
+    """Tests for vision-based ordering code extraction."""
+
+    @patch("tools.parse_tools.HAS_PYMUPDF", False)
+    def test_returns_empty_without_pymupdf(self):
+        """Should gracefully return [] if PyMuPDF is not available."""
+        result = extract_ordering_code_from_images("fake.pdf", "Danfoss")
+        assert result == []
+
+    @patch("tools.parse_tools._fitz")
+    @patch("tools.parse_tools._get_client")
+    def test_extracts_ordering_code_via_vision(self, mock_client, mock_fitz):
+        """Should extract ordering code definitions from rendered PDF pages."""
+        # Mock PDF with 3 pages
+        mock_page = MagicMock()
+        mock_pix = MagicMock()
+        mock_pix.tobytes.return_value = b"\x89PNG" + b"\x00" * 10000
+        mock_page.get_pixmap.return_value = mock_pix
+
+        mock_doc = MagicMock()
+        mock_doc.__len__ = MagicMock(return_value=3)
+        mock_doc.__getitem__ = MagicMock(return_value=mock_page)
+        mock_fitz.open.return_value = mock_doc
+
+        # Mock GPT-4o vision response with ordering code
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = '''{
+            "ordering_codes": [{
+                "series": "DG4V-3",
+                "product_name": "Directional Control Valve",
+                "category": "directional_valves",
+                "code_template": "{01}-{02}-{03}",
+                "segments": [
+                    {"position": 1, "segment_name": "series_code", "is_fixed": true,
+                     "separator_before": "", "options": [{"code": "DG4V-3", "description": "Series",
+                     "maps_to_field": "series_code", "maps_to_value": "DG4V-3"}]},
+                    {"position": 2, "segment_name": "spool_type", "is_fixed": false,
+                     "separator_before": "-", "options": [
+                        {"code": "2A", "description": "All ports blocked",
+                         "maps_to_field": "spool_type", "maps_to_value": "2A"},
+                        {"code": "6C", "description": "P to T",
+                         "maps_to_field": "spool_type", "maps_to_value": "6C"}
+                    ]}
+                ],
+                "shared_specs": {"max_pressure_bar": 350}
+            }]
+        }'''
+        mock_client.return_value.chat.completions.create.return_value = mock_response
+
+        result = extract_ordering_code_from_images("test.pdf", "Danfoss", "directional_valves")
+
+        assert len(result) == 1
+        assert result[0].series == "DG4V-3"
+        assert result[0].company == "Danfoss"
+        spool_seg = [s for s in result[0].segments if s.segment_name == "spool_type"]
+        assert len(spool_seg) == 1
+        assert len(spool_seg[0].options) == 2
+
+    @patch("tools.parse_tools._fitz")
+    @patch("tools.parse_tools._get_client")
+    def test_handles_api_failure_gracefully(self, mock_client, mock_fitz):
+        """Should return [] on API errors without crashing."""
+        mock_page = MagicMock()
+        mock_pix = MagicMock()
+        mock_pix.tobytes.return_value = b"\x89PNG" + b"\x00" * 10000
+        mock_page.get_pixmap.return_value = mock_pix
+
+        mock_doc = MagicMock()
+        mock_doc.__len__ = MagicMock(return_value=1)
+        mock_doc.__getitem__ = MagicMock(return_value=mock_page)
+        mock_fitz.open.return_value = mock_doc
+
+        # Simulate API failure
+        mock_client.return_value.chat.completions.create.side_effect = Exception("API error")
+
+        result = extract_ordering_code_from_images("test.pdf", "Danfoss")
+        assert result == []
+
+    @patch("tools.parse_tools._fitz")
+    @patch("tools.parse_tools._get_client")
+    def test_skips_blank_pages(self, mock_client, mock_fitz):
+        """Should skip pages that render to very small images (blank)."""
+        # Page 0: blank (small image)
+        mock_blank_page = MagicMock()
+        mock_blank_pix = MagicMock()
+        mock_blank_pix.tobytes.return_value = b"\x89PNG" + b"\x00" * 100  # < 5000
+        mock_blank_page.get_pixmap.return_value = mock_blank_pix
+
+        # Page 1: real content
+        mock_real_page = MagicMock()
+        mock_real_pix = MagicMock()
+        mock_real_pix.tobytes.return_value = b"\x89PNG" + b"\x00" * 10000
+        mock_real_page.get_pixmap.return_value = mock_real_pix
+
+        mock_doc = MagicMock()
+        mock_doc.__len__ = MagicMock(return_value=2)
+        mock_doc.__getitem__ = MagicMock(side_effect=[mock_blank_page, mock_real_page])
+        mock_fitz.open.return_value = mock_doc
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = '{"ordering_codes": []}'
+        mock_client.return_value.chat.completions.create.return_value = mock_response
+
+        result = extract_ordering_code_from_images("test.pdf", "Danfoss")
+        # Should have called the API only once (skipped the blank page)
+        assert mock_client.return_value.chat.completions.create.call_count == 1

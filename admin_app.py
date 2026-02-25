@@ -291,10 +291,14 @@ def process_upload(files, company, doc_type, category, pending_state):
         for w in gapfill_warnings:
             gapfill_info += f"  {w}\n"
 
+    # Show which extraction pipeline was used (vision vs text)
+    extraction_method = getattr(pipeline, "_last_extraction_method", "text")
+    method_tag = f"[{extraction_method}]" if extraction_method != "text" else ""
+
     status = (
         f"Extracted {len(all_extracted)} products from {len(file_paths)} file(s). "
         f"Also indexed {all_chunk_counts} text chunks.\n"
-        f"Sources: {', '.join(source_details)}.\n"
+        f"Sources: {', '.join(source_details)}.{' ' + method_tag if method_tag else ''}\n"
         f"{dynamic_col_info}"
         f"{gapfill_info}\n"
         f"File results:\n" + "\n".join(file_summaries) + "\n\n"

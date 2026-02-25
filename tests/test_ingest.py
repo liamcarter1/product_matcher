@@ -6,7 +6,7 @@ deduplication, and _extracted_to_hydraulic conversion.
 
 import uuid
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from models import (
     ExtractedProduct, HydraulicProduct, UploadMetadata,
@@ -977,3 +977,113 @@ class TestInferSeriesFromProducts:
         """Should return empty string for empty list."""
         series = IngestionPipeline._infer_series_from_products([], "Danfoss")
         assert series == ""
+
+
+# ── Graphics-Heavy Pipeline Branching Tests ──────────────────────
+
+
+class TestGraphicsHeavyBranching:
+    """Tests for vision-first pipeline branching when graphics-heavy PDF is detected."""
+
+    @pytest.fixture
+    def pipeline(self):
+        db = MagicMock()
+        db.decode_model_code.return_value = None
+        db.get_spool_codes_for_series.return_value = []
+        db.get_primary_spool_codes.return_value = []
+        vs = MagicMock()
+        return IngestionPipeline(db=db, vector_store=vs)
+
+    @pytest.fixture
+    def metadata(self):
+        return UploadMetadata(
+            company="Danfoss",
+            document_type=DocumentType.DATASHEET,
+            category="directional_valves",
+            filename="DG4V3.pdf",
+        )
+
+    @patch("ingest.extract_ordering_code_from_images")
+    @patch("ingest.extract_ordering_code_with_llm")
+    @patch("ingest._is_graphics_heavy_pdf", return_value=True)
+    @patch("ingest._get_pdf_page_count", return_value=14)
+    @patch("ingest.extract_text_from_pdf", return_value=[{"page": 1, "text": "short"}])
+    @patch("ingest.extract_tables_from_pdf", return_value=[])
+    @patch("ingest.extract_products_with_llm", return_value=[])
+    @patch("ingest.extract_model_code_patterns_with_llm", return_value=[])
+    @patch("ingest.analyze_spool_functions", return_value=[])
+    @patch("ingest.extract_spool_symbols_from_pdf", return_value=[])
+    def test_vision_path_used_when_graphics_heavy(
+        self, mock_spool_vis, mock_spool_analysis,
+        mock_patterns, mock_llm_products, mock_tables, mock_text,
+        mock_page_count, mock_is_heavy,
+        mock_text_ordering, mock_vision_ordering,
+        pipeline, metadata,
+    ):
+        """When PDF is graphics-heavy, vision extraction should be called instead of text."""
+        mock_vision_ordering.return_value = []
+        mock_text_ordering.return_value = []
+
+        pipeline.process_pdf("test.pdf", metadata)
+
+        # Vision should be called
+        mock_vision_ordering.assert_called_once()
+        # Text extraction should NOT be called (since vision returned [] and text fallback fires,
+        # but the initial text ordering should not be the primary call)
+        assert pipeline._last_extraction_method in ("vision", "text (vision fallback)")
+
+    @patch("ingest.extract_ordering_code_from_images")
+    @patch("ingest.extract_ordering_code_with_llm")
+    @patch("ingest._is_graphics_heavy_pdf", return_value=False)
+    @patch("ingest._get_pdf_page_count", return_value=14)
+    @patch("ingest.extract_text_from_pdf", return_value=[{"page": 1, "text": "x" * 5000}])
+    @patch("ingest.extract_tables_from_pdf", return_value=[])
+    @patch("ingest.extract_products_with_llm", return_value=[])
+    @patch("ingest.extract_model_code_patterns_with_llm", return_value=[])
+    @patch("ingest.analyze_spool_functions", return_value=[])
+    @patch("ingest.extract_spool_symbols_from_pdf", return_value=[])
+    def test_text_path_used_for_normal_pdf(
+        self, mock_spool_vis, mock_spool_analysis,
+        mock_patterns, mock_llm_products, mock_tables, mock_text,
+        mock_page_count, mock_is_heavy,
+        mock_text_ordering, mock_vision_ordering,
+        pipeline, metadata,
+    ):
+        """When PDF is NOT graphics-heavy, text extraction should be used."""
+        mock_text_ordering.return_value = []
+
+        pipeline.process_pdf("test.pdf", metadata)
+
+        # Vision should NOT be called
+        mock_vision_ordering.assert_not_called()
+        # Text should be called
+        mock_text_ordering.assert_called_once()
+        assert pipeline._last_extraction_method == "text"
+
+    @patch("ingest.extract_ordering_code_from_images")
+    @patch("ingest.extract_ordering_code_with_llm")
+    @patch("ingest._is_graphics_heavy_pdf", return_value=True)
+    @patch("ingest._get_pdf_page_count", return_value=14)
+    @patch("ingest.extract_text_from_pdf", return_value=[{"page": 1, "text": "some text"}])
+    @patch("ingest.extract_tables_from_pdf", return_value=[])
+    @patch("ingest.extract_products_with_llm", return_value=[])
+    @patch("ingest.extract_model_code_patterns_with_llm", return_value=[])
+    @patch("ingest.analyze_spool_functions", return_value=[])
+    @patch("ingest.extract_spool_symbols_from_pdf", return_value=[])
+    def test_vision_fallback_to_text(
+        self, mock_spool_vis, mock_spool_analysis,
+        mock_patterns, mock_llm_products, mock_tables, mock_text,
+        mock_page_count, mock_is_heavy,
+        mock_text_ordering, mock_vision_ordering,
+        pipeline, metadata,
+    ):
+        """When vision extraction returns nothing, should fall back to text extraction."""
+        mock_vision_ordering.return_value = []  # Vision fails
+        mock_text_ordering.return_value = []
+
+        pipeline.process_pdf("test.pdf", metadata)
+
+        # Both should be called: vision first, then text fallback
+        mock_vision_ordering.assert_called_once()
+        mock_text_ordering.assert_called_once()
+        assert pipeline._last_extraction_method == "text (vision fallback)"

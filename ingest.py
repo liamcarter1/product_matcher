@@ -24,10 +24,13 @@ from tools.parse_tools import (
     extract_products_with_llm,
     extract_model_code_patterns_with_llm,
     extract_ordering_code_with_llm,
+    extract_ordering_code_from_images,
     generate_products_from_ordering_code,
     analyze_spool_functions,
     extract_spool_symbols_from_pdf,
     extract_cross_references_with_llm,
+    _is_graphics_heavy_pdf,
+    _get_pdf_page_count,
 )
 from storage.product_db import ProductDB
 from storage.vector_store import VectorStore
@@ -129,6 +132,14 @@ class IngestionPipeline:
         pages = extract_text_from_pdf(pdf_path)
         full_text = "\n\n".join(p["text"] for p in pages)
 
+        # Step 2.5: Detect graphics-heavy PDFs (ordering codes rendered as vector graphics)
+        total_page_count = _get_pdf_page_count(pdf_path)
+        graphics_heavy = _is_graphics_heavy_pdf(pages, total_page_count)
+        self._last_extraction_method = "vision" if graphics_heavy else "text"
+        if graphics_heavy:
+            print(f"[DEBUG] PDF classified as graphics-heavy ({total_page_count} pages, "
+                  f"avg {sum(len(p['text']) for p in pages) / max(total_page_count, 1):.0f} chars/page)")
+
         # Step 3: If tables didn't yield products, use LLM extraction
         if not extracted_products and full_text:
             llm_products = extract_products_with_llm(full_text, metadata)
@@ -156,82 +167,101 @@ class IngestionPipeline:
         # Step 5: Ordering code combinatorial generation
         # Extract ordering code breakdown tables and generate ALL product variants
         gapfill_warnings: list[str] = []
-        if full_text:
-            try:
-                # Look up known spool codes for this company to inject into the prompt
-                print(f"[DEBUG] Starting ordering code extraction for {metadata.company}...")
-                known_spools = self.db.get_spool_codes_for_series(
-                    metadata.category or "", metadata.company,
+        try:
+            # Look up known spool codes for this company to inject into the prompt
+            print(f"[DEBUG] Starting ordering code extraction for {metadata.company}...")
+            known_spools = self.db.get_spool_codes_for_series(
+                metadata.category or "", metadata.company,
+            )
+            print(f"[DEBUG] Known spools: {known_spools}")
+
+            # Choose extraction method: vision-first for graphics-heavy, text for normal
+            ordering_defs = []
+            if graphics_heavy:
+                print("[DEBUG] Using VISION extraction for ordering codes (graphics-heavy PDF)")
+                ordering_defs = extract_ordering_code_from_images(
+                    pdf_path, metadata.company, metadata.category or "",
+                    known_spool_codes=known_spools if known_spools else None,
                 )
-                print(f"[DEBUG] Known spools: {known_spools}")
+                # If vision fails, fall back to text (may still yield partial results)
+                if not ordering_defs and full_text:
+                    print("[DEBUG] Vision extraction returned nothing, falling back to text extraction")
+                    self._last_extraction_method = "text (vision fallback)"
+                    ordering_defs = extract_ordering_code_with_llm(
+                        full_text, metadata.company, metadata.category or "",
+                        known_spool_codes=known_spools if known_spools else None,
+                    )
+            elif full_text:
                 ordering_defs = extract_ordering_code_with_llm(
                     full_text, metadata.company, metadata.category or "",
                     known_spool_codes=known_spools if known_spools else None,
                 )
-                for definition in ordering_defs:
-                    # Also look up spools by specific series (more precise)
-                    if definition.series and not known_spools:
-                        series_spools = self.db.get_spool_codes_for_series(
-                            definition.series, metadata.company,
-                        )
-                        if series_spools:
-                            logger.info("Found %d known spool codes for series %s",
-                                        len(series_spools), definition.series)
 
-                    # Look up primary (main runner) spool codes for this series
-                    print(f"[DEBUG] Looking up primary spools for series={definition.series}, company={metadata.company}")
-                    primary_spools = self.db.get_primary_spool_codes(
+            for definition in ordering_defs:
+                # Also look up spools by specific series (more precise)
+                if definition.series and not known_spools:
+                    series_spools = self.db.get_spool_codes_for_series(
                         definition.series, metadata.company,
                     )
-                    print(f"[DEBUG] Primary spools: {primary_spools}")
-                    if primary_spools:
-                        logger.info(
-                            "Primary spool filter active for %s: %d codes: %s",
-                            definition.series, len(primary_spools), primary_spools,
-                        )
+                    if series_spools:
+                        logger.info("Found %d known spool codes for series %s",
+                                    len(series_spools), definition.series)
 
-                    generated = generate_products_from_ordering_code(
-                        definition, metadata,
-                        primary_spool_codes=primary_spools if primary_spools else None,
+                # Look up primary (main runner) spool codes for this series
+                print(f"[DEBUG] Looking up primary spools for series={definition.series}, company={metadata.company}")
+                primary_spools = self.db.get_primary_spool_codes(
+                    definition.series, metadata.company,
+                )
+                print(f"[DEBUG] Primary spools: {primary_spools}")
+                if primary_spools:
+                    logger.info(
+                        "Primary spool filter active for %s: %d codes: %s",
+                        definition.series, len(primary_spools), primary_spools,
                     )
+
+                generated = generate_products_from_ordering_code(
+                    definition, metadata,
+                    primary_spool_codes=primary_spools if primary_spools else None,
+                )
+                if generated:
+                    print(f"Generated {len(generated)} products from ordering code "
+                          f"table for series: {definition.series} "
+                          f"[{self._last_extraction_method}]")
+                    # Diagnostic: log segment names and sample spec keys
+                    seg_names = [s.segment_name for s in definition.segments]
+                    logger.info("Ordering code segments: %s", seg_names)
                     if generated:
-                        print(f"Generated {len(generated)} products from ordering code "
-                              f"table for series: {definition.series}")
-                        # Diagnostic: log segment names and sample spec keys
-                        seg_names = [s.segment_name for s in definition.segments]
-                        logger.info("Ordering code segments: %s", seg_names)
-                        if generated:
-                            sample_keys = sorted(generated[0].specs.keys())
-                            logger.info("Sample product spec keys: %s", sample_keys)
-                        extracted_products.extend(generated)
+                        sample_keys = sorted(generated[0].specs.keys())
+                        logger.info("Sample product spec keys: %s", sample_keys)
+                    extracted_products.extend(generated)
 
-                        # Also store as ModelCodePattern rows for future decode use
-                        for seg in definition.segments:
-                            for opt in seg.options:
-                                try:
-                                    pattern = ModelCodePattern(
-                                        company=metadata.company,
-                                        series=definition.series,
-                                        segment_position=seg.position,
-                                        segment_name=seg.segment_name,
-                                        code_value=opt.get("code", ""),
-                                        decoded_value=opt.get("description", ""),
-                                        maps_to_field=opt.get("maps_to_field", ""),
-                                    )
-                                    if pattern.series and pattern.code_value:
-                                        self.db.insert_model_code_pattern(pattern)
-                                except Exception as e:
-                                    print(f"Error storing ordering code pattern: {e}")
+                    # Also store as ModelCodePattern rows for future decode use
+                    for seg in definition.segments:
+                        for opt in seg.options:
+                            try:
+                                pattern = ModelCodePattern(
+                                    company=metadata.company,
+                                    series=definition.series,
+                                    segment_position=seg.position,
+                                    segment_name=seg.segment_name,
+                                    code_value=opt.get("code", ""),
+                                    decoded_value=opt.get("description", ""),
+                                    maps_to_field=opt.get("maps_to_field", ""),
+                                )
+                                if pattern.series and pattern.code_value:
+                                    self.db.insert_model_code_pattern(pattern)
+                            except Exception as e:
+                                print(f"Error storing ordering code pattern: {e}")
 
-                    # Step 5a: Validate spool options against reference & gap-fill
-                    warnings = self._validate_and_gapfill_spools(
-                        definition, metadata, extracted_products,
-                    )
-                    gapfill_warnings.extend(warnings)
+                # Step 5a: Validate spool options against reference & gap-fill
+                warnings = self._validate_and_gapfill_spools(
+                    definition, metadata, extracted_products,
+                )
+                gapfill_warnings.extend(warnings)
 
-            except Exception as e:
-                print(f"Error in ordering code extraction: {e}")
-                traceback.print_exc()
+        except Exception as e:
+            print(f"Error in ordering code extraction: {e}")
+            traceback.print_exc()
 
         # Step 5b: Deep spool function analysis (second-pass LLM)
         # Analyse the full text to understand spool symbols and functions
