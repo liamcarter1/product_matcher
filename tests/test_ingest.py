@@ -646,15 +646,15 @@ class TestVisionSpoolIntegration:
     """Tests that the ingestion pipeline imports and references vision spool extraction."""
 
     def test_extract_spool_symbols_imported(self):
-        """The ingest module should import extract_spool_symbols_from_pdf."""
+        """The ingest module should import extract_spool_symbols_from_pdf_v2."""
         import ingest
-        assert hasattr(ingest, 'extract_spool_symbols_from_pdf')
+        assert hasattr(ingest, 'extract_spool_symbols_from_pdf_v2')
 
     def test_pipeline_process_pdf_source_contains_vision_step(self):
         """The process_pdf method should contain the vision spool extraction step."""
         import inspect
         source = inspect.getsource(IngestionPipeline.process_pdf)
-        assert "extract_spool_symbols_from_pdf" in source
+        assert "extract_spool_symbols_from_pdf_v2" in source
         assert "vision" in source.lower()
 
     def test_vision_spool_data_merges_into_product_specs(self):
@@ -1012,7 +1012,7 @@ class TestGraphicsHeavyBranching:
     @patch("ingest.extract_products_with_llm", return_value=[])
     @patch("ingest.extract_model_code_patterns_with_llm", return_value=[])
     @patch("ingest.analyze_spool_functions", return_value=[])
-    @patch("ingest.extract_spool_symbols_from_pdf", return_value=[])
+    @patch("ingest.extract_spool_symbols_from_pdf_v2", return_value=[])
     def test_vision_path_used_when_graphics_heavy(
         self, mock_spool_vis, mock_spool_analysis,
         mock_patterns, mock_llm_products, mock_tables, mock_text,
@@ -1041,7 +1041,7 @@ class TestGraphicsHeavyBranching:
     @patch("ingest.extract_products_with_llm", return_value=[])
     @patch("ingest.extract_model_code_patterns_with_llm", return_value=[])
     @patch("ingest.analyze_spool_functions", return_value=[])
-    @patch("ingest.extract_spool_symbols_from_pdf", return_value=[])
+    @patch("ingest.extract_spool_symbols_from_pdf_v2", return_value=[])
     def test_text_path_used_for_normal_pdf(
         self, mock_spool_vis, mock_spool_analysis,
         mock_patterns, mock_llm_products, mock_tables, mock_text,
@@ -1070,7 +1070,7 @@ class TestGraphicsHeavyBranching:
     @patch("ingest.extract_products_with_llm", return_value=[])
     @patch("ingest.extract_model_code_patterns_with_llm", return_value=[])
     @patch("ingest.analyze_spool_functions", return_value=[])
-    @patch("ingest.extract_spool_symbols_from_pdf", return_value=[])
+    @patch("ingest.extract_spool_symbols_from_pdf_v2", return_value=[])
     def test_no_vision_retry_for_short_pdf(
         self, mock_spool_vis, mock_spool_analysis,
         mock_patterns, mock_llm_products, mock_tables, mock_text,
@@ -1096,7 +1096,7 @@ class TestGraphicsHeavyBranching:
     @patch("ingest.extract_products_with_llm", return_value=[])
     @patch("ingest.extract_model_code_patterns_with_llm", return_value=[])
     @patch("ingest.analyze_spool_functions", return_value=[])
-    @patch("ingest.extract_spool_symbols_from_pdf", return_value=[])
+    @patch("ingest.extract_spool_symbols_from_pdf_v2", return_value=[])
     def test_vision_fallback_to_text(
         self, mock_spool_vis, mock_spool_analysis,
         mock_patterns, mock_llm_products, mock_tables, mock_text,

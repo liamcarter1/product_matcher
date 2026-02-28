@@ -13,9 +13,9 @@ from dotenv import load_dotenv
 
 from storage.product_db import ProductDB
 from storage.vector_store import VectorStore
-from graph import MatchGraph
+from tools.agents.chat_agent import ChatAgent as MatchGraph
 from tools.lookup_tools import LookupTools
-from tools.vision_extract import extract_text_from_image
+from tools.agents.image_reader import extract_text_from_image
 
 load_dotenv(override=True)
 

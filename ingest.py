@@ -11,31 +11,40 @@ from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from models import (
     HydraulicProduct, ExtractedProduct, UploadMetadata,
     ModelCodePattern, DocumentType,
 )
+
+# Non-LLM utilities (PDF parsing, text extraction, product generation, spool helpers)
 from tools.parse_tools import (
     extract_tables_from_pdf,
     extract_text_from_pdf,
     table_rows_to_products,
-    extract_products_with_llm,
-    extract_model_code_patterns_with_llm,
-    extract_ordering_code_with_llm,
-    extract_ordering_code_from_images,
     generate_products_from_ordering_code,
-    analyze_spool_functions,
-    extract_spool_symbols_from_pdf,
-    extract_spool_symbols_from_pdf_v2,
-    extract_cross_references_with_llm,
     _is_graphics_heavy_pdf,
     _get_pdf_page_count,
     _classify_spool_pages,
     _merge_spool_results,
     _merge_spool_results_v2,
 )
+
+# LLM-powered agent modules (Anthropic Claude / OpenAI dual-provider)
+from tools.agents.product_extractor import extract_products as extract_products_with_llm
+from tools.agents.spec_extractor import extract_model_code_patterns as extract_model_code_patterns_with_llm
+from tools.agents.ordering_code import (
+    extract_ordering_code_text as extract_ordering_code_with_llm,
+    extract_ordering_code_vision as extract_ordering_code_from_images,
+)
+from tools.agents.spool_analyzer import (
+    analyze_spool_text as analyze_spool_functions,
+    analyze_spool_vision as extract_spool_symbols_from_pdf_v2,
+)
+from tools.agents.cross_reference import extract_cross_references as extract_cross_references_with_llm
+
+from tools.agents.base import chunk_text as _chunk_text
+
 from storage.product_db import ProductDB
 from storage.vector_store import VectorStore
 
@@ -105,11 +114,9 @@ _FIELD_ALIASES = {
     "product_type": "subcategory", "valve_type": "subcategory",
 }
 
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=1500,
-    chunk_overlap=300,
-    separators=["\n\n", "\n", ". ", " ", ""],
-)
+def _split_text_for_vectorstore(text: str) -> list[str]:
+    """Split text into chunks for vector store indexing."""
+    return _chunk_text(text, chunk_size=1500, overlap=300)
 
 
 class IngestionPipeline:
@@ -837,7 +844,7 @@ class IngestionPipeline:
             # Prefix each chunk with page info for better retrieval
             page_prefix = f"[Page {page_num} of {metadata.filename}]\n"
 
-            page_chunks = text_splitter.split_text(page_text)
+            page_chunks = _split_text_for_vectorstore(page_text)
             for i, chunk in enumerate(page_chunks):
                 chunk_id = f"{metadata.filename}_p{page_num}_chunk_{i}"
                 self.vector_store.index_guide_chunk(
@@ -851,7 +858,7 @@ class IngestionPipeline:
 
         # ── Pass 2: Full-document chunks (captures cross-page info) ─
         full_text = "\n\n".join(p["text"] for p in pages)
-        full_chunks = text_splitter.split_text(full_text)
+        full_chunks = _split_text_for_vectorstore(full_text)
         for i, chunk in enumerate(full_chunks):
             chunk_id = f"{metadata.filename}_full_chunk_{i}"
             self.vector_store.index_guide_chunk(

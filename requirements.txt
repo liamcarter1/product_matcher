@@ -1,12 +1,9 @@
 # ProductMatchPro - Hydraulic Product Cross-Reference RAG Application
 # Install: pip install -r requirements.txt
 
-# Core LLM & Agent framework
+# LLM Providers (dual-provider: set LLM_PROVIDER=anthropic or openai in .env)
+anthropic>=0.40.0
 openai>=1.30.0
-langchain-openai>=0.3.9
-langchain-community>=0.3.20
-langgraph>=0.3.18
-langchain-text-splitters>=0.2.0
 
 # PDF parsing — PyMuPDF is the primary extractor (best for complex layouts,
 # multi-column text, operating data tables). pypdf is a lightweight fallback.
