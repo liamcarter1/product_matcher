@@ -164,8 +164,51 @@ class IngestionPipeline:
                 except Exception as e:
                     print(f"Error storing pattern: {e}")
 
-        # Step 5: Ordering code combinatorial generation
+        # Step 5: Spool extraction FIRST (before ordering codes)
+        # Vision-based spool extraction scans ALL pages for ISO 1219 symbols.
+        # Text-based spool analysis extracts from full text.
+        # Results are used to: (a) inject known spool codes into ordering code prompt,
+        # (b) merge spool function data into generated products after ordering codes.
+        spool_lookup = {}
+        vision_spool_lookup = {}
+
+        # Step 5a: Vision-based spool symbol extraction (scans ALL pages)
+        # Spool symbols are ISO 1219 hydraulic diagrams — purely graphical.
+        try:
+            vision_spools = extract_spool_symbols_from_pdf(pdf_path, metadata.company)
+            if vision_spools:
+                for vs in vision_spools:
+                    code = vs.get("spool_code", "").strip()
+                    if code:
+                        vision_spool_lookup[code.upper()] = vs
+                        vision_spool_lookup[code.upper().lstrip("0")] = vs
+                print(f"Vision spool extraction: {len(vision_spools)} symbols found")
+        except Exception as e:
+            logger.warning("Vision spool extraction error (non-fatal): %s", e)
+
+        # Step 5b: Text-based spool function analysis
+        # Runs for ALL document types — any document may contain spool info
+        if full_text:
+            try:
+                spool_results = analyze_spool_functions(full_text, metadata.company)
+                if spool_results:
+                    for sr in spool_results:
+                        code = sr.get("spool_code", "").strip()
+                        if code:
+                            spool_lookup[code.upper()] = sr
+                            spool_lookup[code.upper().lstrip("0")] = sr
+                    print(f"Spool text analysis: found {len(spool_results)} spool types")
+            except Exception as e:
+                print(f"Error in spool function analysis: {e}")
+
+        # Combine discovered spool codes from both sources
+        discovered_spool_codes = list(set(
+            list(spool_lookup.keys()) + list(vision_spool_lookup.keys())
+        ))
+
+        # Step 6: Ordering code combinatorial generation
         # Extract ordering code breakdown tables and generate ALL product variants
+        # Now receives spool codes discovered in Step 5 as additional reference data
         gapfill_warnings: list[str] = []
         try:
             # Look up known spool codes for this company to inject into the prompt
@@ -173,7 +216,15 @@ class IngestionPipeline:
             known_spools = self.db.get_spool_codes_for_series(
                 metadata.category or "", metadata.company,
             )
-            print(f"[DEBUG] Known spools: {known_spools}")
+            print(f"[DEBUG] Known spools (DB): {known_spools}")
+
+            # Merge DB-known spools with freshly-discovered spools from Step 5
+            all_known_spools = list(set(
+                (known_spools or []) + discovered_spool_codes
+            ))
+            if discovered_spool_codes:
+                print(f"[DEBUG] Injecting {len(discovered_spool_codes)} discovered spool codes "
+                      f"into ordering code extraction")
 
             # Choose extraction method: vision-first for graphics-heavy, text for normal
             ordering_defs = []
@@ -181,7 +232,7 @@ class IngestionPipeline:
                 print("[DEBUG] Using VISION extraction for ordering codes (graphics-heavy PDF)")
                 ordering_defs = extract_ordering_code_from_images(
                     pdf_path, metadata.company, metadata.category or "",
-                    known_spool_codes=known_spools if known_spools else None,
+                    known_spool_codes=all_known_spools if all_known_spools else None,
                 )
                 # If vision fails, fall back to text (may still yield partial results)
                 if not ordering_defs and full_text:
@@ -189,12 +240,12 @@ class IngestionPipeline:
                     self._last_extraction_method = "text (vision fallback)"
                     ordering_defs = extract_ordering_code_with_llm(
                         full_text, metadata.company, metadata.category or "",
-                        known_spool_codes=known_spools if known_spools else None,
+                        known_spool_codes=all_known_spools if all_known_spools else None,
                     )
             elif full_text:
                 ordering_defs = extract_ordering_code_with_llm(
                     full_text, metadata.company, metadata.category or "",
-                    known_spool_codes=known_spools if known_spools else None,
+                    known_spool_codes=all_known_spools if all_known_spools else None,
                 )
                 # Vision retry: if text extraction found NO ordering codes and
                 # the PDF has enough pages, try vision as a fallback. This catches
@@ -205,7 +256,7 @@ class IngestionPipeline:
                           f"{total_page_count}-page PDF, retrying with VISION")
                     ordering_defs = extract_ordering_code_from_images(
                         pdf_path, metadata.company, metadata.category or "",
-                        known_spool_codes=known_spools if known_spools else None,
+                        known_spool_codes=all_known_spools if all_known_spools else None,
                     )
                     if ordering_defs:
                         self._last_extraction_method = "vision (text retry)"
@@ -267,7 +318,7 @@ class IngestionPipeline:
                             except Exception as e:
                                 print(f"Error storing ordering code pattern: {e}")
 
-                # Step 5a: Validate spool options against reference & gap-fill
+                # Step 6a: Validate spool options against reference & gap-fill
                 warnings = self._validate_and_gapfill_spools(
                     definition, metadata, extracted_products,
                 )
@@ -277,106 +328,44 @@ class IngestionPipeline:
             print(f"Error in ordering code extraction: {e}")
             traceback.print_exc()
 
-        # Step 5b: Deep spool function analysis (second-pass LLM)
-        # Analyse the full text to understand spool symbols and functions
-        # Runs for ALL document types — any document may contain spool info
-        if full_text:
-            try:
-                spool_results = analyze_spool_functions(full_text, metadata.company)
-                if spool_results:
-                    # Build lookup: spool_code -> structured data
-                    spool_lookup = {}
-                    for sr in spool_results:
-                        code = sr.get("spool_code", "").strip()
-                        if code:
-                            spool_lookup[code.upper()] = sr
-                            # Also store without leading zeros etc.
-                            spool_lookup[code.upper().lstrip("0")] = sr
+        # Step 7: Merge spool function data into extracted products
+        # Combine text + vision spool lookups (text takes priority, vision fills gaps)
+        merged_spool_lookup = dict(vision_spool_lookup)  # vision as base
+        merged_spool_lookup.update(spool_lookup)  # text overwrites vision
 
-                    # Merge spool function data into matching extracted products
-                    for product in extracted_products:
-                        spool = product.specs.get("spool_type", "")
-                        if not spool:
-                            continue
-                        spool_upper = str(spool).strip().upper()
-                        matched_spool = spool_lookup.get(spool_upper)
-                        if not matched_spool:
-                            # Try partial match (e.g. product spool "2A" in "type 2A")
-                            for code, data in spool_lookup.items():
-                                if code in spool_upper or spool_upper in code:
-                                    matched_spool = data
-                                    break
-                        if matched_spool:
-                            # Store as flat keys (not nested) so they become visible columns
-                            if not product.specs.get("center_condition"):
-                                product.specs["center_condition"] = matched_spool.get("center_condition", "")
-                            if not product.specs.get("solenoid_a_energised"):
-                                product.specs["solenoid_a_energised"] = matched_spool.get("solenoid_a_function", "")
-                            if not product.specs.get("solenoid_b_energised"):
-                                product.specs["solenoid_b_energised"] = matched_spool.get("solenoid_b_function", "")
-                            if not product.specs.get("spool_function_description"):
-                                product.specs["spool_function_description"] = matched_spool.get("description", "")
-                            if not product.specs.get("canonical_spool_pattern"):
-                                product.specs["canonical_spool_pattern"] = matched_spool.get("canonical_pattern", "")
-                    merged_count = sum(1 for p in extracted_products
-                                       if p.specs.get("center_condition"))
-                    logger.info("Spool analysis: found %d spool types, merged into %d products",
-                                len(spool_results), merged_count)
-                    print(f"Spool analysis: found {len(spool_results)} spool types, "
-                          f"merged into {merged_count} products")
-            except Exception as e:
-                print(f"Error in spool function analysis: {e}")
+        if merged_spool_lookup:
+            spool_merged_count = 0
+            for product in extracted_products:
+                spool = product.specs.get("spool_type", "")
+                if not spool:
+                    continue
+                spool_upper = str(spool).strip().upper()
+                matched = merged_spool_lookup.get(spool_upper)
+                if not matched:
+                    # Try partial match (e.g. product spool "2A" in "type 2A")
+                    for code, data in merged_spool_lookup.items():
+                        if code in spool_upper or spool_upper in code:
+                            matched = data
+                            break
+                if matched:
+                    if not product.specs.get("center_condition"):
+                        product.specs["center_condition"] = matched.get("center_condition", "")
+                    if not product.specs.get("solenoid_a_energised"):
+                        product.specs["solenoid_a_energised"] = matched.get("solenoid_a_function", "")
+                    if not product.specs.get("solenoid_b_energised"):
+                        product.specs["solenoid_b_energised"] = matched.get("solenoid_b_function", "")
+                    if not product.specs.get("spool_function_description"):
+                        product.specs["spool_function_description"] = matched.get("description", "")
+                    if not product.specs.get("canonical_spool_pattern"):
+                        product.specs["canonical_spool_pattern"] = matched.get("canonical_pattern", "")
+                    if matched.get("symbol_description"):
+                        product.specs["spool_symbol_description"] = matched["symbol_description"]
+                    spool_merged_count += 1
 
-        # Step 5c: Vision-based spool symbol extraction (catches graphical symbols)
-        # Spool symbols are ISO 1219 hydraulic diagrams — they're images, not text.
-        # This uses GPT-4o vision to read the actual symbol diagrams from PDF pages.
-        try:
-            vision_spools = extract_spool_symbols_from_pdf(pdf_path, metadata.company)
-            if vision_spools:
-                # Build lookup from vision results
-                vision_lookup = {}
-                for vs in vision_spools:
-                    code = vs.get("spool_code", "").strip()
-                    if code:
-                        vision_lookup[code.upper()] = vs
-                        vision_lookup[code.upper().lstrip("0")] = vs
-
-                # Merge vision spool data into products — fill gaps not covered by text analysis
-                vision_merged = 0
-                for product in extracted_products:
-                    spool = product.specs.get("spool_type", "")
-                    if not spool:
-                        continue
-                    spool_upper = str(spool).strip().upper()
-                    matched = vision_lookup.get(spool_upper)
-                    if not matched:
-                        for code, data in vision_lookup.items():
-                            if code in spool_upper or spool_upper in code:
-                                matched = data
-                                break
-                    if matched:
-                        # Vision data fills gaps — only set if text analysis didn't already
-                        if not product.specs.get("center_condition"):
-                            product.specs["center_condition"] = matched.get("center_condition", "")
-                        if not product.specs.get("solenoid_a_energised"):
-                            product.specs["solenoid_a_energised"] = matched.get("solenoid_a_function", "")
-                        if not product.specs.get("solenoid_b_energised"):
-                            product.specs["solenoid_b_energised"] = matched.get("solenoid_b_function", "")
-                        if not product.specs.get("spool_function_description"):
-                            product.specs["spool_function_description"] = matched.get("description", "")
-                        if not product.specs.get("canonical_spool_pattern"):
-                            product.specs["canonical_spool_pattern"] = matched.get("canonical_pattern", "")
-                        # Store the visual symbol description for cross-manufacturer matching
-                        if matched.get("symbol_description"):
-                            product.specs["spool_symbol_description"] = matched["symbol_description"]
-                        vision_merged += 1
-
-                logger.info("Vision spool extraction: %d symbols found, merged into %d products",
-                            len(vision_spools), vision_merged)
-                print(f"Vision spool extraction: {len(vision_spools)} symbols found, "
-                      f"merged into {vision_merged} products")
-        except Exception as e:
-            logger.warning("Vision spool extraction error (non-fatal): %s", e)
+            logger.info("Spool merge: %d spool definitions applied to %d products",
+                        len(merged_spool_lookup), spool_merged_count)
+            print(f"Spool merge: {len(merged_spool_lookup)} spool definitions, "
+                  f"applied to {spool_merged_count} products")
 
         # Diagnostic: log all unique spec keys across extracted products
         all_spec_keys = set()
@@ -388,10 +377,10 @@ class IngestionPipeline:
         logger.info("Total extracted products: %d, all spec keys: %s", len(extracted_products), sorted(all_spec_keys))
         logger.info("Dynamic (non-standard) spec keys: %s", sorted(dynamic_keys))
 
-        # Step 5d: Post-process spool_type values (safety net for LLM non-compliance)
+        # Step 8: Post-process spool_type values (safety net for LLM non-compliance)
         self._clean_spool_types(extracted_products)
 
-        # Step 6: Deduplicate by model_code (prefer ordering_code > table > llm)
+        # Step 9: Deduplicate by model_code (prefer ordering_code > table > llm)
         extracted_products = self._deduplicate_products(extracted_products)
 
         # Attach metadata to all products

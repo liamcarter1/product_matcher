@@ -1521,9 +1521,9 @@ def extract_ordering_code_from_images(
 
     total_pages = len(doc)
 
-    # Default: pages 1-5 (0-indexed) — ordering codes are usually in the first few pages
+    # Default: pages 1-10 (0-indexed) — ordering codes on early pages, spool tables on later pages
     if target_pages is None:
-        target_pages = list(range(min(5, total_pages)))
+        target_pages = list(range(min(10, total_pages)))
 
     # Render pages to PNG
     images_b64 = []
