@@ -4,6 +4,7 @@ Covers: _parse_numeric_if_possible, assemble_model_code, generate_products_from_
 table_rows_to_products, HEADER_MAPPINGS, LLM prompt validation, and vision pipeline.
 """
 
+import json
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -18,11 +19,15 @@ from tools.parse_tools import (
     table_rows_to_products,
     compute_canonical_pattern,
     extract_spool_symbols_from_pdf,
+    extract_spool_symbols_from_pdf_v2,
     extract_cross_references_with_llm,
     extract_ordering_code_from_images,
     _is_graphics_heavy_pdf,
     _get_pdf_page_count,
     _parse_ordering_code_response,
+    _classify_spool_pages,
+    _merge_spool_results,
+    _deduplicate_spools,
     HEADER_MAPPINGS,
     _VALID_SPEC_FIELDS,
     MAX_COMBINATIONS,
@@ -738,7 +743,7 @@ class TestExtractSpoolSymbolsFromPdf:
         assert len(result) == 1
         assert result[0]["spool_code"] == "D"
         assert result[0]["company"] == "Rexroth"
-        assert result[0]["extraction_method"] == "vision"
+        assert result[0]["extraction_method"] in ("vision", "vision_v2")
         assert "canonical_pattern" in result[0]
         assert result[0]["canonical_pattern"].startswith("BLOCKED|")
 
@@ -1228,3 +1233,430 @@ class TestExtractOrderingCodeFromImages:
         result = extract_ordering_code_from_images("test.pdf", "Danfoss")
         # Should have called the API only once (skipped the blank page)
         assert mock_client.return_value.chat.completions.create.call_count == 1
+
+
+# ===========================================================================
+# Tests for redesigned spool extraction pipeline (v2)
+# ===========================================================================
+
+
+class TestClassifySpoolPages:
+    """Tests for _classify_spool_pages — page classification heuristics."""
+
+    def test_spool_keywords_detected(self):
+        """Pages with strong spool keywords → SPOOL_CONTENT."""
+        pages = [
+            {"page": 1, "text": "This page shows spool type options and center condition for each."},
+        ]
+        with patch("tools.parse_tools.HAS_PYMUPDF", True), \
+             patch("tools.parse_tools._fitz") as mock_fitz:
+            mock_doc = MagicMock()
+            mock_doc.__len__ = MagicMock(return_value=1)
+            mock_fitz.open.return_value = mock_doc
+            result = _classify_spool_pages("test.pdf", pages)
+        assert result[0] == "SPOOL_CONTENT"
+
+    def test_maybe_spool_keywords(self):
+        """Pages with weak keywords only → MAYBE_SPOOL."""
+        pages = [
+            {"page": 1, "text": "The solenoid is energised in this position for the left symbol side."},
+        ]
+        with patch("tools.parse_tools.HAS_PYMUPDF", True), \
+             patch("tools.parse_tools._fitz") as mock_fitz:
+            mock_doc = MagicMock()
+            mock_doc.__len__ = MagicMock(return_value=1)
+            mock_fitz.open.return_value = mock_doc
+            result = _classify_spool_pages("test.pdf", pages)
+        assert result[0] == "MAYBE_SPOOL"
+
+    def test_non_spool_page(self):
+        """Pages about dimensions, weight → NON_SPOOL."""
+        pages = [
+            {"page": 1, "text": "The overall dimensions are 150mm x 80mm x 60mm. Weight is 3.2kg. "
+                                "Installation torque requirements must be followed. Maintenance "
+                                "should be performed every 2000 hours of operation. Use proper tools "
+                                "and follow all safety guidelines. The mounting bolt pattern is 4x M8 "
+                                "on 100mm PCD. Ambient temperature range is -20C to +60C. Maximum "
+                                "working pressure is 350 bar. Flow rate capacity is 100 LPM nominal."},
+        ]
+        with patch("tools.parse_tools.HAS_PYMUPDF", True), \
+             patch("tools.parse_tools._fitz") as mock_fitz:
+            mock_doc = MagicMock()
+            mock_doc.__len__ = MagicMock(return_value=1)
+            mock_fitz.open.return_value = mock_doc
+            result = _classify_spool_pages("test.pdf", pages)
+        assert result[0] == "NON_SPOOL"
+
+    def test_sparse_text_classified_as_maybe(self):
+        """Pages with very little text (<300 chars) → MAYBE_SPOOL (may be graphical)."""
+        pages = [
+            {"page": 1, "text": "DG4V-3"},  # Very sparse — likely a diagram page
+        ]
+        with patch("tools.parse_tools.HAS_PYMUPDF", True), \
+             patch("tools.parse_tools._fitz") as mock_fitz:
+            mock_doc = MagicMock()
+            mock_doc.__len__ = MagicMock(return_value=1)
+            mock_fitz.open.return_value = mock_doc
+            result = _classify_spool_pages("test.pdf", pages)
+        assert result[0] == "MAYBE_SPOOL"
+
+    def test_returns_all_pages(self):
+        """Should return a classification for every page in the PDF."""
+        pages = [
+            {"page": 1, "text": "Cover page"},
+            {"page": 2, "text": "This shows spool type options with center condition blocked."},
+            {"page": 3, "text": "Dimensions and weight specifications for mounting."},
+        ]
+        with patch("tools.parse_tools.HAS_PYMUPDF", True), \
+             patch("tools.parse_tools._fitz") as mock_fitz:
+            mock_doc = MagicMock()
+            mock_doc.__len__ = MagicMock(return_value=3)
+            mock_fitz.open.return_value = mock_doc
+            result = _classify_spool_pages("test.pdf", pages)
+        assert len(result) == 3
+        assert 0 in result and 1 in result and 2 in result
+
+
+class TestExtractSpoolSymbolsV2:
+    """Tests for extract_spool_symbols_from_pdf_v2 — batched multi-page vision."""
+
+    @patch("tools.parse_tools.HAS_PYMUPDF", False)
+    def test_returns_empty_without_pymupdf(self):
+        """Should gracefully return [] if PyMuPDF not available."""
+        result = extract_spool_symbols_from_pdf_v2("fake.pdf", "Danfoss")
+        assert result == []
+
+    @patch("tools.parse_tools._fitz")
+    @patch("tools.parse_tools._get_client")
+    def test_uses_higher_dpi_than_v1(self, mock_client, mock_fitz):
+        """Default DPI should be 250 (not 150)."""
+        mock_page = MagicMock()
+        mock_pix = MagicMock()
+        mock_pix.tobytes.return_value = b"\x89PNG" + b"\x00" * 10000
+        mock_page.get_pixmap.return_value = mock_pix
+
+        mock_doc = MagicMock()
+        mock_doc.__len__ = MagicMock(return_value=1)
+        mock_doc.__getitem__ = MagicMock(return_value=mock_page)
+        mock_fitz.open.return_value = mock_doc
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = '{"spool_symbols": [{"spool_code": "2A", "center_condition": "All ports blocked", "solenoid_a_function": "P to A", "solenoid_b_function": "P to B", "description": "test", "symbol_description": "test sym"}]}'
+        mock_client.return_value.chat.completions.create.return_value = mock_response
+
+        extract_spool_symbols_from_pdf_v2(
+            "test.pdf", "Danfoss", retry_on_low_count=False,
+        )
+        # Check the DPI used for rendering
+        mock_page.get_pixmap.assert_called_with(dpi=250)
+
+    @patch("tools.parse_tools._fitz")
+    @patch("tools.parse_tools._get_client")
+    def test_batches_pages(self, mock_client, mock_fitz):
+        """8 pages with batch_size=4 should create 2 API calls."""
+        mock_page = MagicMock()
+        mock_pix = MagicMock()
+        mock_pix.tobytes.return_value = b"\x89PNG" + b"\x00" * 10000
+        mock_page.get_pixmap.return_value = mock_pix
+
+        mock_doc = MagicMock()
+        mock_doc.__len__ = MagicMock(return_value=8)
+        mock_doc.__getitem__ = MagicMock(return_value=mock_page)
+        mock_fitz.open.return_value = mock_doc
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = '{"spool_symbols": []}'
+        mock_client.return_value.chat.completions.create.return_value = mock_response
+
+        extract_spool_symbols_from_pdf_v2(
+            "test.pdf", "Danfoss", batch_size=4, retry_on_low_count=False,
+        )
+        # 8 pages / 4 batch = 2 API calls
+        assert mock_client.return_value.chat.completions.create.call_count == 2
+
+    @patch("tools.parse_tools._fitz")
+    @patch("tools.parse_tools._get_client")
+    def test_spool_content_pages_first(self, mock_client, mock_fitz):
+        """SPOOL_CONTENT pages should be processed before MAYBE_SPOOL."""
+        mock_page = MagicMock()
+        mock_pix = MagicMock()
+        mock_pix.tobytes.return_value = b"\x89PNG" + b"\x00" * 10000
+        mock_page.get_pixmap.return_value = mock_pix
+
+        mock_doc = MagicMock()
+        mock_doc.__len__ = MagicMock(return_value=4)
+        mock_doc.__getitem__ = MagicMock(return_value=mock_page)
+        mock_fitz.open.return_value = mock_doc
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = '{"spool_symbols": []}'
+        mock_client.return_value.chat.completions.create.return_value = mock_response
+
+        # Page 3 is SPOOL_CONTENT, pages 0,1 are MAYBE, page 2 is NON_SPOOL
+        classifications = {0: "MAYBE_SPOOL", 1: "MAYBE_SPOOL",
+                           2: "NON_SPOOL", 3: "SPOOL_CONTENT"}
+
+        extract_spool_symbols_from_pdf_v2(
+            "test.pdf", "Danfoss",
+            page_classifications=classifications,
+            batch_size=4, retry_on_low_count=False,
+        )
+        # Should process 3 pages (SPOOL_CONTENT + MAYBE_SPOOL, skip NON_SPOOL)
+        assert mock_page.get_pixmap.call_count == 3
+
+    @patch("tools.parse_tools._fitz")
+    @patch("tools.parse_tools._get_client")
+    def test_cumulative_context_injected(self, mock_client, mock_fitz):
+        """Second batch should include spools found in first batch."""
+        mock_page = MagicMock()
+        mock_pix = MagicMock()
+        mock_pix.tobytes.return_value = b"\x89PNG" + b"\x00" * 10000
+        mock_page.get_pixmap.return_value = mock_pix
+
+        mock_doc = MagicMock()
+        mock_doc.__len__ = MagicMock(return_value=2)
+        mock_doc.__getitem__ = MagicMock(return_value=mock_page)
+        mock_fitz.open.return_value = mock_doc
+
+        # First batch finds "2A", second batch should have it in context
+        response_1 = MagicMock()
+        response_1.choices = [MagicMock()]
+        response_1.choices[0].message.content = '{"spool_symbols": [{"spool_code": "2A", "center_condition": "Blocked", "solenoid_a_function": "P→A", "solenoid_b_function": "P→B", "description": "Closed center", "symbol_description": "blocked"}]}'
+
+        response_2 = MagicMock()
+        response_2.choices = [MagicMock()]
+        response_2.choices[0].message.content = '{"spool_symbols": [{"spool_code": "6C", "center_condition": "Open", "solenoid_a_function": "P→A", "solenoid_b_function": "P→B", "description": "Open center", "symbol_description": "open"}]}'
+
+        mock_client.return_value.chat.completions.create.side_effect = [response_1, response_2]
+
+        result = extract_spool_symbols_from_pdf_v2(
+            "test.pdf", "Danfoss", batch_size=1, retry_on_low_count=False,
+        )
+
+        # Both spools should be in result
+        codes = {s["spool_code"] for s in result}
+        assert "2A" in codes
+        assert "6C" in codes
+
+        # Check second call had "PREVIOUSLY FOUND" in the prompt
+        second_call = mock_client.return_value.chat.completions.create.call_args_list[1]
+        prompt_text = second_call[1]["messages"][0]["content"][0]["text"]
+        assert "PREVIOUSLY FOUND" in prompt_text
+        assert "2A" in prompt_text
+
+    @patch("tools.parse_tools._fitz")
+    @patch("tools.parse_tools._get_client")
+    def test_known_spool_codes_injected(self, mock_client, mock_fitz):
+        """Known spool codes from DB should appear in the prompt."""
+        mock_page = MagicMock()
+        mock_pix = MagicMock()
+        mock_pix.tobytes.return_value = b"\x89PNG" + b"\x00" * 10000
+        mock_page.get_pixmap.return_value = mock_pix
+
+        mock_doc = MagicMock()
+        mock_doc.__len__ = MagicMock(return_value=1)
+        mock_doc.__getitem__ = MagicMock(return_value=mock_page)
+        mock_fitz.open.return_value = mock_doc
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = '{"spool_symbols": []}'
+        mock_client.return_value.chat.completions.create.return_value = mock_response
+
+        extract_spool_symbols_from_pdf_v2(
+            "test.pdf", "Danfoss",
+            known_spool_codes=["2A", "6C", "H"],
+            retry_on_low_count=False,
+        )
+
+        call_args = mock_client.return_value.chat.completions.create.call_args
+        prompt_text = call_args[1]["messages"][0]["content"][0]["text"]
+        assert "KNOWN SPOOL CODES" in prompt_text
+        assert "2A" in prompt_text
+        assert "6C" in prompt_text
+
+    @patch("tools.parse_tools._fitz")
+    @patch("tools.parse_tools._get_client")
+    def test_retry_on_low_count(self, mock_client, mock_fitz):
+        """When <5 spools found with retry_on_low_count=True, should retry."""
+        mock_page = MagicMock()
+        mock_pix = MagicMock()
+        mock_pix.tobytes.return_value = b"\x89PNG" + b"\x00" * 10000
+        mock_page.get_pixmap.return_value = mock_pix
+
+        mock_doc = MagicMock()
+        mock_doc.__len__ = MagicMock(return_value=1)
+        mock_doc.__getitem__ = MagicMock(return_value=mock_page)
+        mock_fitz.open.return_value = mock_doc
+
+        # First pass: 1 spool. Retry: 2 more spools.
+        response_1 = MagicMock()
+        response_1.choices = [MagicMock()]
+        response_1.choices[0].message.content = '{"spool_symbols": [{"spool_code": "2A", "center_condition": "Blocked", "solenoid_a_function": "P→A", "solenoid_b_function": "P→B", "description": "test", "symbol_description": "s"}]}'
+
+        response_retry = MagicMock()
+        response_retry.choices = [MagicMock()]
+        response_retry.choices[0].message.content = '{"spool_symbols": [{"spool_code": "2A", "center_condition": "Blocked", "solenoid_a_function": "P→A", "solenoid_b_function": "P→B", "description": "test", "symbol_description": "s"}, {"spool_code": "6C", "center_condition": "Open", "solenoid_a_function": "P→A", "solenoid_b_function": "P→B", "description": "test", "symbol_description": "s"}]}'
+
+        mock_client.return_value.chat.completions.create.side_effect = [response_1, response_retry]
+
+        result = extract_spool_symbols_from_pdf_v2(
+            "test.pdf", "Danfoss", retry_on_low_count=True,
+        )
+        # Should have made 2 API calls (initial + retry)
+        assert mock_client.return_value.chat.completions.create.call_count == 2
+        codes = {s["spool_code"].upper() for s in result}
+        assert "2A" in codes
+        assert "6C" in codes
+
+    @patch("tools.parse_tools._fitz")
+    @patch("tools.parse_tools._get_client")
+    def test_no_retry_when_enough_spools(self, mock_client, mock_fitz):
+        """When >=5 spools found, should NOT retry."""
+        mock_page = MagicMock()
+        mock_pix = MagicMock()
+        mock_pix.tobytes.return_value = b"\x89PNG" + b"\x00" * 10000
+        mock_page.get_pixmap.return_value = mock_pix
+
+        mock_doc = MagicMock()
+        mock_doc.__len__ = MagicMock(return_value=1)
+        mock_doc.__getitem__ = MagicMock(return_value=mock_page)
+        mock_fitz.open.return_value = mock_doc
+
+        spools_json = [
+            {"spool_code": c, "center_condition": "test", "solenoid_a_function": "P→A",
+             "solenoid_b_function": "P→B", "description": "test", "symbol_description": "s"}
+            for c in ["2A", "2C", "6C", "0A", "H"]
+        ]
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = json.dumps({"spool_symbols": spools_json})
+        mock_client.return_value.chat.completions.create.return_value = mock_response
+
+        result = extract_spool_symbols_from_pdf_v2(
+            "test.pdf", "Danfoss", retry_on_low_count=True,
+        )
+        # Only 1 API call — no retry needed
+        assert mock_client.return_value.chat.completions.create.call_count == 1
+        assert len(result) == 5
+
+    def test_legacy_wrapper_delegates(self):
+        """extract_spool_symbols_from_pdf() should call v2."""
+        with patch("tools.parse_tools.extract_spool_symbols_from_pdf_v2") as mock_v2:
+            mock_v2.return_value = [{"spool_code": "X"}]
+            result = extract_spool_symbols_from_pdf("test.pdf", "Danfoss")
+            mock_v2.assert_called_once_with("test.pdf", "Danfoss")
+            assert result == [{"spool_code": "X"}]
+
+
+class TestDeduplicateSpools:
+    """Tests for _deduplicate_spools helper."""
+
+    def test_basic_dedup(self):
+        """Same code twice — keep the one with more data."""
+        spools = [
+            {"spool_code": "2A", "symbol_description": "short",
+             "center_condition": "Blocked", "solenoid_a_function": "",
+             "solenoid_b_function": ""},
+            {"spool_code": "2A", "symbol_description": "much longer description",
+             "center_condition": "All ports blocked", "solenoid_a_function": "P→A",
+             "solenoid_b_function": "P→B"},
+        ]
+        result = _deduplicate_spools(spools)
+        assert len(result) == 1
+        assert result[0]["solenoid_a_function"] == "P→A"
+
+    def test_case_insensitive(self):
+        """Spool codes should be deduped case-insensitively."""
+        spools = [
+            {"spool_code": "2a", "symbol_description": "x",
+             "center_condition": "Blocked"},
+            {"spool_code": "2A", "symbol_description": "xx",
+             "center_condition": "Blocked"},
+        ]
+        result = _deduplicate_spools(spools)
+        assert len(result) == 1
+
+    def test_different_codes_preserved(self):
+        """Different spool codes should all be kept."""
+        spools = [
+            {"spool_code": "2A", "symbol_description": "x"},
+            {"spool_code": "6C", "symbol_description": "y"},
+            {"spool_code": "H", "symbol_description": "z"},
+        ]
+        result = _deduplicate_spools(spools)
+        assert len(result) == 3
+
+
+class TestMergeSpoolResults:
+    """Tests for _merge_spool_results — UNION merge of vision and text."""
+
+    def test_vision_only(self):
+        """Only vision spools → all preserved."""
+        vision = [
+            {"spool_code": "2A", "center_condition": "Blocked",
+             "solenoid_a_function": "P→A", "solenoid_b_function": "P→B"},
+            {"spool_code": "6C", "center_condition": "Open",
+             "solenoid_a_function": "P→A", "solenoid_b_function": "P→B"},
+        ]
+        result = _merge_spool_results(vision, [])
+        assert "2A" in result
+        assert "6C" in result
+
+    def test_text_only(self):
+        """Only text spools → all preserved."""
+        text = [
+            {"spool_code": "2A", "center_condition": "Blocked",
+             "solenoid_a_function": "P→A"},
+        ]
+        result = _merge_spool_results([], text)
+        assert "2A" in result
+
+    def test_union_no_overlap(self):
+        """Different codes from each source → all present."""
+        vision = [{"spool_code": "2A", "center_condition": "Blocked"}]
+        text = [{"spool_code": "6C", "center_condition": "Open"}]
+        result = _merge_spool_results(vision, text)
+        assert "2A" in result
+        assert "6C" in result
+
+    def test_overlapping_codes_vision_wins(self):
+        """Same code from both — vision data should be preserved."""
+        vision = [{"spool_code": "2A", "center_condition": "All ports blocked",
+                    "solenoid_a_function": "P→A, B→T"}]
+        text = [{"spool_code": "2A", "center_condition": "Blocked",
+                 "solenoid_a_function": "wrong data from text"}]
+        result = _merge_spool_results(vision, text)
+        assert result["2A"]["center_condition"] == "All ports blocked"
+        assert result["2A"]["solenoid_a_function"] == "P→A, B→T"
+
+    def test_text_fills_empty_vision_fields(self):
+        """Vision has empty field, text has data → field should be filled."""
+        vision = [{"spool_code": "2A", "center_condition": "Blocked",
+                    "solenoid_a_function": "", "solenoid_b_function": ""}]
+        text = [{"spool_code": "2A", "center_condition": "Blocked",
+                 "solenoid_a_function": "P→A, B→T",
+                 "solenoid_b_function": "P→B, A→T"}]
+        result = _merge_spool_results(vision, text)
+        assert result["2A"]["solenoid_a_function"] == "P→A, B→T"
+        assert result["2A"]["solenoid_b_function"] == "P→B, A→T"
+
+    def test_text_does_not_overwrite_vision_fields(self):
+        """Vision has data, text has different data → vision should win."""
+        vision = [{"spool_code": "2A", "center_condition": "All ports blocked",
+                    "description": "Closed center standard"}]
+        text = [{"spool_code": "2A", "center_condition": "Blocked center",
+                 "description": "Different description"}]
+        result = _merge_spool_results(vision, text)
+        assert result["2A"]["center_condition"] == "All ports blocked"
+        assert result["2A"]["description"] == "Closed center standard"
+
+    def test_leading_zero_aliases(self):
+        """Spool "0A" should also create alias "A"."""
+        vision = [{"spool_code": "0A", "center_condition": "Blocked"}]
+        result = _merge_spool_results(vision, [])
+        assert "0A" in result
+        assert "A" in result

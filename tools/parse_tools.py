@@ -1164,16 +1164,102 @@ the symbol diagram is what matters for cross-referencing.
 If both diagrams AND a table are present, extract from BOTH but deduplicate by spool_code."""
 
 
-def extract_spool_symbols_from_pdf(pdf_path: str, company: str) -> list[dict]:
-    """Extract spool symbols from PDF pages using GPT-4o vision.
+# --- V2 prompt for batched multi-page spool extraction ----------------------
 
-    Renders each page as an image, sends to GPT-4o to identify hydraulic spool
-    symbol diagrams, and returns structured spool data with canonical patterns.
+_SPOOL_VISION_PROMPT_V2 = """You are an expert hydraulic engineer analysing MULTIPLE PAGES from a product datasheet.
 
-    This catches spool information that text extraction misses because the symbols
-    are graphical (ISO 1219 hydraulic schematic diagrams).
+These pages may contain HYDRAULIC SPOOL SYMBOL DIAGRAMS and/or SPOOL OPTIONS TABLES.
 
-    Requires PyMuPDF (fitz) for page rendering.
+## SPOOL SYMBOL DIAGRAMS (ISO 1219)
+These are standardised schematic diagrams showing valve spool positions:
+- A rectangle divided into 2-3 sections (one per switching position: left, center, right)
+- Arrows showing flow paths between ports: P (pressure supply), T (tank return), A and B (work ports)
+- Blocked ports shown as T-symbols or dead-end lines
+- Each symbol has a letter/number CODE label (e.g. "D", "E", "H", "2A", "01", "6C")
+
+IMPORTANT: The symbols can be SMALL. Look very carefully for tiny arrows and port labels.
+The CENTER section of a 3-position symbol shows the NEUTRAL/CENTER CONDITION — this is
+the most important part for cross-referencing across manufacturers.
+
+## SPOOL OPTIONS TABLE
+Some pages contain a TABLE listing all available spool types with columns like:
+- Spool code / type designation
+- Center condition description
+- Active (solenoid energised) function
+- Crossover function during transition
+
+If you see a spool options table, extract ALL rows from it — do not skip any.
+
+## EXPECTED COUNT
+Directional valve series typically have **10-30+ spool type options**. If you find fewer
+than 5 options across all pages shown, look more carefully at:
+- Small symbol diagrams that may be grouped tightly together
+- Table rows that might be partially cut off at page edges
+- Secondary tables on the same page
+
+{previously_found}
+{known_spool_codes_section}
+## Your task:
+Identify ALL spool symbols AND/OR table rows across ALL pages shown. For each one extract:
+
+1. "spool_code": the letter/number designation (e.g. "D", "2A", "H", "01", "EA", "6C", "0C")
+2. "center_condition": what happens in the center/neutral position
+   (e.g. "All ports blocked", "P and T connected, A and B blocked", "All ports open to tank")
+3. "solenoid_a_function": flow path when left/solenoid-A is energised (e.g. "P→A, B→T")
+4. "solenoid_b_function": flow path when right/solenoid-B is energised (e.g. "P→B, A→T")
+5. "description": brief summary of the spool function
+6. "symbol_description": describe the visual symbol pattern in detail (arrows, blocked ports,
+   flow paths in each position from left to right). This text description of the VISUAL SYMBOL
+   will be used to match equivalent spool functions across different manufacturers.
+
+For 2-position valves, set center_condition to "N/A (2-position valve)" and only fill solenoid_a_function.
+
+Return valid JSON: {{"spool_symbols": [...]}}
+If NO spool symbols or spool tables are found on ANY page, return: {{"spool_symbols": []}}
+
+IMPORTANT: Focus on the VISUAL flow path patterns. Two manufacturers may use different
+letter codes (e.g. Danfoss "2A" = Bosch "D") for the exact same hydraulic function.
+If both diagrams AND a table are present, extract from BOTH but deduplicate by spool_code."""
+
+
+def extract_spool_symbols_from_pdf_v2(
+    pdf_path: str,
+    company: str,
+    page_classifications: dict[int, str] | None = None,
+    dpi: int = 250,
+    max_tokens_per_batch: int = 4096,
+    batch_size: int = 4,
+    known_spool_codes: list[str] | None = None,
+    retry_on_low_count: bool = True,
+    min_expected_spools: int = 5,
+) -> list[dict]:
+    """Extract spool symbols from PDF using batched multi-page GPT-4o vision.
+
+    Redesigned pipeline that:
+    - Groups pages into batches of ``batch_size`` for multi-image API calls
+    - Renders at higher DPI (250 default) for better symbol clarity
+    - Injects cumulative context (previously found spools) into each batch
+    - Retries with higher DPI if fewer than ``min_expected_spools`` found
+    - Prioritises SPOOL_CONTENT pages over MAYBE_SPOOL pages
+
+    Args:
+        pdf_path: Path to the PDF file.
+        company: Manufacturer name.
+        page_classifications: Optional dict from ``_classify_spool_pages()``.
+            Maps 0-indexed page numbers to "SPOOL_CONTENT"/"MAYBE_SPOOL"/"NON_SPOOL".
+            If None, all pages are processed.
+        dpi: Rendering resolution (default 250, up from legacy 150).
+        max_tokens_per_batch: Max tokens per GPT-4o call (default 4096).
+        batch_size: Number of pages per API call (default 4).
+        known_spool_codes: Optional list of spool codes from DB for reference.
+        retry_on_low_count: If True, retry with higher DPI when too few spools found.
+        min_expected_spools: Threshold for retry trigger.
+
+    Returns:
+        List of spool dicts with: spool_code, center_condition,
+        solenoid_a_function, solenoid_b_function, description,
+        symbol_description, canonical_pattern, source_page, company,
+        extraction_method.
     """
     if not HAS_PYMUPDF:
         logger.warning("PyMuPDF not available — skipping vision spool extraction")
@@ -1184,47 +1270,120 @@ def extract_spool_symbols_from_pdf(pdf_path: str, company: str) -> list[dict]:
     try:
         doc = _fitz.open(pdf_path)
     except Exception as e:
-        logger.error("Failed to open PDF for spool vision: %s", e)
+        logger.error("Failed to open PDF for spool vision v2: %s", e)
         return []
 
-    all_spools = []
-    # Focus on pages likely to have spool symbols (typically later pages)
-    # Process all pages but log which ones yield results
     total_pages = len(doc)
-    logger.info("Spool vision extraction: scanning %d pages in %s", total_pages, pdf_path)
 
-    for page_idx in range(total_pages):
+    # --- Page selection and ordering ----------------------------------------
+    if page_classifications:
+        spool_pages = [i for i, c in page_classifications.items()
+                       if c == "SPOOL_CONTENT" and i < total_pages]
+        maybe_pages = [i for i, c in page_classifications.items()
+                       if c == "MAYBE_SPOOL" and i < total_pages]
+        # Process SPOOL_CONTENT first, then MAYBE_SPOOL
+        selected_pages = sorted(spool_pages) + sorted(maybe_pages)
+    else:
+        # No classification — process all pages (backward compat)
+        selected_pages = list(range(total_pages))
+
+    if not selected_pages:
+        # Fallback: if classification found nothing, scan all pages
+        selected_pages = list(range(total_pages))
+
+    logger.info(
+        "Spool vision v2: %d pages selected (out of %d total) at %d DPI, "
+        "batch_size=%d, max_tokens=%d",
+        len(selected_pages), total_pages, dpi, batch_size, max_tokens_per_batch,
+    )
+
+    # --- Render selected pages at target DPI --------------------------------
+    rendered_pages: list[tuple[int, str]] = []  # (page_idx, image_b64)
+    for page_idx in selected_pages:
         try:
             page = doc[page_idx]
-            # Render page as PNG at 150 DPI (good balance of quality vs size)
-            pix = page.get_pixmap(dpi=150)
+            pix = page.get_pixmap(dpi=dpi)
             image_bytes = pix.tobytes("png")
-
-            # Skip very small pages (probably blank or cover)
             if len(image_bytes) < 5000:
-                continue
-
+                continue  # Skip blank/tiny pages
             image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+            rendered_pages.append((page_idx, image_b64))
+        except Exception as e:
+            logger.warning("Failed to render page %d at %d DPI: %s", page_idx, dpi, e)
 
+    doc.close()
+
+    if not rendered_pages:
+        logger.warning("No renderable pages found for spool extraction")
+        return []
+
+    # --- Batch pages and process with cumulative context --------------------
+    all_spools: list[dict] = []
+    previously_found: dict[str, dict] = {}  # Cumulative context
+    total_batches = (len(rendered_pages) + batch_size - 1) // batch_size
+
+    for batch_idx in range(total_batches):
+        batch_start = batch_idx * batch_size
+        batch = rendered_pages[batch_start:batch_start + batch_size]
+        batch_page_indices = [p[0] for p in batch]
+
+        # Build cumulative context section
+        if previously_found:
+            prev_lines = []
+            for code, data in sorted(previously_found.items()):
+                desc = data.get("center_condition", "") or data.get("description", "")
+                prev_lines.append(f"  - {code}: {desc}")
+            previously_found_text = (
+                "## PREVIOUSLY FOUND SPOOL TYPES\n"
+                "Earlier pages in this document already yielded these spool codes:\n"
+                + "\n".join(prev_lines) + "\n"
+                "Look for ADDITIONAL spool types not in this list. "
+                "Do NOT skip any spool types that appear on these pages, even if "
+                "they were found before.\n"
+            )
+        else:
+            previously_found_text = ""
+
+        # Build known spool codes section
+        if known_spool_codes:
+            known_section = (
+                "## KNOWN SPOOL CODES FOR THIS MANUFACTURER\n"
+                "The database contains these spool codes for this manufacturer: "
+                + ", ".join(sorted(set(known_spool_codes))) + "\n"
+                "Ensure you extract ALL codes that appear on these pages, "
+                "including any that are NOT in this list.\n"
+            )
+        else:
+            known_section = ""
+
+        # Build prompt with context
+        prompt = _SPOOL_VISION_PROMPT_V2.format(
+            previously_found=previously_found_text,
+            known_spool_codes_section=known_section,
+        )
+
+        # Build multi-image message content
+        message_content: list[dict] = [{"type": "text", "text": prompt}]
+        for _, img_b64 in batch:
+            message_content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{img_b64}",
+                    "detail": "high",
+                },
+            })
+
+        logger.info(
+            "Spool vision batch %d/%d: pages %s, %d images",
+            batch_idx + 1, total_batches, batch_page_indices, len(batch),
+        )
+
+        try:
             response = _get_client().chat.completions.create(
                 model=SPOOL_VISION_MODEL,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": _SPOOL_VISION_PROMPT},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/png;base64,{image_b64}",
-                                    "detail": "high",
-                                },
-                            },
-                        ],
-                    }
-                ],
+                messages=[{"role": "user", "content": message_content}],
                 response_format={"type": "json_object"},
-                max_tokens=2000,
+                max_tokens=max_tokens_per_batch,
                 temperature=0.1,
             )
 
@@ -1232,44 +1391,175 @@ def extract_spool_symbols_from_pdf(pdf_path: str, company: str) -> list[dict]:
             data = json.loads(content)
             symbols = data.get("spool_symbols", [])
 
-            if symbols:
-                logger.info("Page %d: found %d spool symbols via vision", page_idx + 1, len(symbols))
-                for sym in symbols:
-                    if not isinstance(sym, dict) or not sym.get("spool_code"):
-                        continue
-                    sym["source_page"] = page_idx + 1
-                    sym["company"] = company
-                    sym["extraction_method"] = "vision"
-                    # Compute canonical pattern from the extracted flow paths
-                    sym["canonical_pattern"] = compute_canonical_pattern(
-                        sym.get("center_condition", ""),
-                        sym.get("solenoid_a_function", ""),
-                        sym.get("solenoid_b_function", ""),
-                    )
-                    all_spools.append(sym)
+            batch_codes = []
+            for sym in symbols:
+                if not isinstance(sym, dict) or not sym.get("spool_code"):
+                    continue
+                sym["source_page"] = batch_page_indices[0] + 1  # approximate
+                sym["company"] = company
+                sym["extraction_method"] = "vision_v2"
+                sym["canonical_pattern"] = compute_canonical_pattern(
+                    sym.get("center_condition", ""),
+                    sym.get("solenoid_a_function", ""),
+                    sym.get("solenoid_b_function", ""),
+                )
+                all_spools.append(sym)
+                code_upper = sym["spool_code"].strip().upper()
+                previously_found[code_upper] = sym
+                batch_codes.append(sym["spool_code"])
+
+            logger.info(
+                "Spool vision batch %d result: %d spools found: %s",
+                batch_idx + 1, len(batch_codes), batch_codes,
+            )
 
         except Exception as e:
-            logger.warning("Spool vision extraction failed on page %d: %s", page_idx + 1, e)
+            logger.warning(
+                "Spool vision batch %d failed (pages %s): %s",
+                batch_idx + 1, batch_page_indices, e,
+            )
+
+    # --- Deduplicate --------------------------------------------------------
+    unique = _deduplicate_spools(all_spools)
+
+    logger.info(
+        "Spool vision v2 total: %d unique spools for %s (from %d raw)",
+        len(unique), company, len(all_spools),
+    )
+
+    # --- Validation & retry -------------------------------------------------
+    if retry_on_low_count and len(unique) < min_expected_spools:
+        retry_dpi = max(dpi + 50, 300)  # Bump DPI
+        retry_tokens = max(max_tokens_per_batch + 2048, 6144)
+
+        # On retry, include ALL pages (even NON_SPOOL)
+        logger.warning(
+            "Only %d spools found (expected >= %d). Retrying with DPI=%d, "
+            "max_tokens=%d, all pages",
+            len(unique), min_expected_spools, retry_dpi, retry_tokens,
+        )
+
+        retry_results = extract_spool_symbols_from_pdf_v2(
+            pdf_path, company,
+            page_classifications=None,  # All pages
+            dpi=retry_dpi,
+            max_tokens_per_batch=retry_tokens,
+            batch_size=batch_size,
+            known_spool_codes=(known_spool_codes or [])
+                + [s["spool_code"] for s in unique],
+            retry_on_low_count=False,  # Don't recurse again
+            min_expected_spools=min_expected_spools,
+        )
+
+        # Merge retry results with originals (union)
+        combined = list(unique) + retry_results
+        unique = _deduplicate_spools(combined)
+        logger.info("After retry: %d unique spools for %s", len(unique), company)
+
+    return unique
+
+
+def _deduplicate_spools(spools: list[dict]) -> list[dict]:
+    """Deduplicate spool dicts by spool_code, keeping the richest entry."""
+    seen: dict[str, dict] = {}
+    for s in spools:
+        code = s.get("spool_code", "").strip().upper()
+        if not code:
+            continue
+        if code not in seen:
+            seen[code] = s
+            continue
+        existing = seen[code]
+        # Prefer entries with more populated fields
+        new_score = (
+            len(s.get("symbol_description", ""))
+            + (10 if s.get("solenoid_a_function") else 0)
+            + (10 if s.get("solenoid_b_function") else 0)
+            + (10 if s.get("center_condition") else 0)
+        )
+        old_score = (
+            len(existing.get("symbol_description", ""))
+            + (10 if existing.get("solenoid_a_function") else 0)
+            + (10 if existing.get("solenoid_b_function") else 0)
+            + (10 if existing.get("center_condition") else 0)
+        )
+        if new_score > old_score:
+            seen[code] = s
+    return list(seen.values())
+
+
+def _merge_spool_results(
+    vision_spools: list[dict],
+    text_spools: list[dict],
+) -> dict[str, dict]:
+    """Merge vision and text spool results using UNION strategy.
+
+    Vision is the primary source (can see graphical symbols). Text is
+    supplementary — it adds codes vision missed but never overwrites
+    vision data.
+
+    Returns:
+        Dict mapping uppercase spool_code to merged spool dict.
+        Also includes leading-zero-stripped aliases.
+    """
+    merged: dict[str, dict] = {}
+
+    # Add all vision spools first (primary)
+    for s in vision_spools:
+        code = s.get("spool_code", "").strip().upper()
+        if not code:
+            continue
+        merged[code] = dict(s)  # copy
+        # Also add alias without leading zeros
+        stripped = code.lstrip("0")
+        if stripped and stripped != code:
+            merged[stripped] = dict(s)
+
+    # Add text spools: new codes added, existing codes only gap-filled
+    for s in text_spools:
+        code = s.get("spool_code", "").strip().upper()
+        if not code:
             continue
 
-    doc.close()
-
-    # Deduplicate by spool_code (keep the one with most data)
-    seen = {}
-    for s in all_spools:
-        code = s["spool_code"].strip().upper()
-        if code in seen:
-            existing = seen[code]
-            # Keep the one with a longer symbol_description (more detail)
-            if len(s.get("symbol_description", "")) > len(existing.get("symbol_description", "")):
-                seen[code] = s
+        if code not in merged:
+            # Text found something vision missed — add it
+            merged[code] = dict(s)
+            stripped = code.lstrip("0")
+            if stripped and stripped != code:
+                merged[stripped] = dict(s)
         else:
-            seen[code] = s
+            # Code already exists from vision — only fill empty fields
+            existing = merged[code]
+            fill_fields = [
+                "center_condition", "solenoid_a_function",
+                "solenoid_b_function", "description",
+                "symbol_description", "canonical_pattern",
+            ]
+            for field in fill_fields:
+                if not existing.get(field) and s.get(field):
+                    existing[field] = s[field]
 
-    results = list(seen.values())
-    logger.info("Spool vision extraction total: %d unique spool symbols for %s",
-                len(results), company)
-    return results
+    vision_count = len({s.get("spool_code", "").strip().upper()
+                        for s in vision_spools if s.get("spool_code")})
+    text_count = len({s.get("spool_code", "").strip().upper()
+                      for s in text_spools if s.get("spool_code")})
+    # Count unique base codes (excluding aliases) in merged
+    unique_codes = len({s.get("spool_code", "").strip().upper()
+                        for s in merged.values() if s.get("spool_code")})
+    logger.info(
+        "Spool merge (UNION): %d vision + %d text = %d unique codes (%d with aliases)",
+        vision_count, text_count, unique_codes, len(merged),
+    )
+    return merged
+
+
+def extract_spool_symbols_from_pdf(pdf_path: str, company: str) -> list[dict]:
+    """Extract spool symbols from PDF pages using GPT-4o vision.
+
+    Legacy wrapper — delegates to extract_spool_symbols_from_pdf_v2().
+    Maintained for backward compatibility with existing callers and tests.
+    """
+    return extract_spool_symbols_from_pdf_v2(pdf_path, company)
 
 
 # ---------------------------------------------------------------------------
@@ -1349,6 +1639,106 @@ def _is_graphics_heavy_pdf(pages: list[dict], total_page_count: int) -> bool:
     )
 
     return is_heavy
+
+
+# ---------------------------------------------------------------------------
+# Step 5 (redesigned): Page classification + batched spool extraction
+# ---------------------------------------------------------------------------
+
+# Strong indicators that a page contains spool information
+_SPOOL_STRONG_PATTERNS = [
+    re.compile(r"\bspool\s+type", re.IGNORECASE),
+    re.compile(r"\bcenter\s+condition", re.IGNORECASE),
+    re.compile(r"\bcentre\s+condition", re.IGNORECASE),
+    re.compile(r"\bneutral\s+position", re.IGNORECASE),
+    re.compile(r"\bflow\s+path", re.IGNORECASE),
+    re.compile(r"\bP\s*(?:to|→|->)\s*[ATBP]", re.IGNORECASE),
+    re.compile(r"\bISO\s*1219", re.IGNORECASE),
+    re.compile(r"\bvalve\s+function\b", re.IGNORECASE),
+    re.compile(r"\bcrossover\b", re.IGNORECASE),
+    # Table header patterns for spool tables
+    re.compile(r"spool.*?code|code.*?spool", re.IGNORECASE),
+    re.compile(r"blocked.*?ports|ports.*?blocked", re.IGNORECASE),
+]
+
+# Weak indicators — spool-adjacent terminology
+_SPOOL_WEAK_PATTERNS = [
+    re.compile(r"\bsolenoid\b", re.IGNORECASE),
+    re.compile(r"\benergis", re.IGNORECASE),  # energised/energized
+    re.compile(r"\bposition\b", re.IGNORECASE),
+    re.compile(r"\bsymbol\b", re.IGNORECASE),
+    # Port labels appearing together suggest valve diagrams
+    re.compile(r"\bport\s+[PATB]\b", re.IGNORECASE),
+]
+
+
+def _classify_spool_pages(
+    pdf_path: str,
+    pages_text: list[dict],
+) -> dict[int, str]:
+    """Classify PDF pages by likelihood of containing spool information.
+
+    Uses zero-cost text heuristics (no API calls) to determine which pages
+    are worth sending to GPT-4o vision for spool extraction.
+
+    Args:
+        pdf_path: Path to the PDF file (used for vector graphics check).
+        pages_text: Output from extract_text_from_pdf() — list of {page, text}.
+
+    Returns:
+        Dict mapping 0-indexed page number to classification:
+        "SPOOL_CONTENT", "MAYBE_SPOOL", or "NON_SPOOL".
+    """
+    # Build page text lookup (pages_text uses 1-indexed page numbers)
+    page_texts: dict[int, str] = {}
+    for p in pages_text:
+        page_texts[p["page"] - 1] = p.get("text", "")  # convert to 0-indexed
+
+    # Get total page count
+    total_pages = 0
+    if HAS_PYMUPDF:
+        try:
+            doc = _fitz.open(pdf_path)
+            total_pages = len(doc)
+            doc.close()
+        except Exception:
+            pass
+    if total_pages == 0:
+        total_pages = max((p["page"] for p in pages_text), default=0)
+
+    classifications: dict[int, str] = {}
+
+    for page_idx in range(total_pages):
+        text = page_texts.get(page_idx, "")
+        text_lower = text.lower()
+
+        # Count strong and weak pattern matches
+        strong_count = sum(1 for pat in _SPOOL_STRONG_PATTERNS if pat.search(text))
+        weak_count = sum(1 for pat in _SPOOL_WEAK_PATTERNS if pat.search(text))
+
+        # Sparse text pages on graphics-heavy PDFs get bumped to MAYBE
+        is_sparse = len(text.strip()) < 300
+
+        if strong_count >= 2 or (strong_count >= 1 and weak_count >= 2):
+            classifications[page_idx] = "SPOOL_CONTENT"
+        elif strong_count >= 1 or weak_count >= 3:
+            classifications[page_idx] = "MAYBE_SPOOL"
+        elif is_sparse:
+            # Sparse pages might contain only graphical symbols (no text)
+            # Classify as MAYBE so they aren't completely excluded
+            classifications[page_idx] = "MAYBE_SPOOL"
+        else:
+            classifications[page_idx] = "NON_SPOOL"
+
+    spool_count = sum(1 for v in classifications.values() if v == "SPOOL_CONTENT")
+    maybe_count = sum(1 for v in classifications.values() if v == "MAYBE_SPOOL")
+    logger.info(
+        "Page classification: %d SPOOL_CONTENT, %d MAYBE_SPOOL, %d NON_SPOOL "
+        "out of %d pages",
+        spool_count, maybe_count,
+        total_pages - spool_count - maybe_count, total_pages,
+    )
+    return classifications
 
 
 def _parse_ordering_code_response(

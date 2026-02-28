@@ -28,9 +28,12 @@ from tools.parse_tools import (
     generate_products_from_ordering_code,
     analyze_spool_functions,
     extract_spool_symbols_from_pdf,
+    extract_spool_symbols_from_pdf_v2,
     extract_cross_references_with_llm,
     _is_graphics_heavy_pdf,
     _get_pdf_page_count,
+    _classify_spool_pages,
+    _merge_spool_results,
 )
 from storage.product_db import ProductDB
 from storage.vector_store import VectorStore
@@ -165,51 +168,56 @@ class IngestionPipeline:
                     print(f"Error storing pattern: {e}")
 
         # Step 5: Spool extraction FIRST (before ordering codes)
-        # Vision-based spool extraction scans ALL pages for ISO 1219 symbols.
-        # Text-based spool analysis extracts from full text.
-        # Results are used to: (a) inject known spool codes into ordering code prompt,
-        # (b) merge spool function data into generated products after ordering codes.
-        spool_lookup = {}
-        vision_spool_lookup = {}
+        # Uses redesigned three-phase pipeline:
+        #   5a: Page classification (zero API cost — text heuristics)
+        #   5b: Batched multi-page vision extraction (primary, GPT-4o)
+        #   5c: Text-based analysis (supplementary, fills gaps only)
+        #   5d: UNION merge (vision wins, text adds missing codes)
+        vision_spools: list[dict] = []
+        text_spools: list[dict] = []
 
-        # Step 5a: Vision-based spool symbol extraction (scans ALL pages)
-        # Spool symbols are ISO 1219 hydraulic diagrams — purely graphical.
+        # Step 5a: Classify pages for spool content (zero-cost heuristics)
+        page_classifications = _classify_spool_pages(pdf_path, pages)
+        spool_page_count = sum(
+            1 for v in page_classifications.values()
+            if v in ("SPOOL_CONTENT", "MAYBE_SPOOL")
+        )
+        print(f"[DEBUG] Page classification: {spool_page_count}/{total_page_count} "
+              f"pages have potential spool content")
+
+        # Step 5b: Batched multi-page vision extraction (primary)
         try:
-            vision_spools = extract_spool_symbols_from_pdf(pdf_path, metadata.company)
+            known_spools_db = self.db.get_spool_codes_for_series(
+                metadata.category or "", metadata.company,
+            )
+            vision_spools = extract_spool_symbols_from_pdf_v2(
+                pdf_path, metadata.company,
+                page_classifications=page_classifications,
+                known_spool_codes=known_spools_db if known_spools_db else None,
+                retry_on_low_count=True,
+            )
             if vision_spools:
-                for vs in vision_spools:
-                    code = vs.get("spool_code", "").strip()
-                    if code:
-                        vision_spool_lookup[code.upper()] = vs
-                        vision_spool_lookup[code.upper().lstrip("0")] = vs
-                print(f"Vision spool extraction: {len(vision_spools)} symbols found")
+                print(f"Vision spool extraction v2: {len(vision_spools)} symbols found")
         except Exception as e:
-            logger.warning("Vision spool extraction error (non-fatal): %s", e)
+            logger.warning("Vision spool extraction v2 error (non-fatal): %s", e)
 
-        # Step 5b: Text-based spool function analysis
-        # Runs for ALL document types — any document may contain spool info
+        # Step 5c: Text-based spool analysis (supplementary)
         if full_text:
             try:
-                spool_results = analyze_spool_functions(full_text, metadata.company)
-                if spool_results:
-                    for sr in spool_results:
-                        code = sr.get("spool_code", "").strip()
-                        if code:
-                            spool_lookup[code.upper()] = sr
-                            spool_lookup[code.upper().lstrip("0")] = sr
-                    print(f"Spool text analysis: found {len(spool_results)} spool types")
+                text_spools = analyze_spool_functions(full_text, metadata.company)
+                if text_spools:
+                    print(f"Spool text analysis: found {len(text_spools)} spool types")
             except Exception as e:
                 print(f"Error in spool function analysis: {e}")
 
-        # Combine discovered spool codes from both sources
-        discovered_spool_codes = list(set(
-            list(spool_lookup.keys()) + list(vision_spool_lookup.keys())
-        ))
+        # Step 5d: UNION merge (vision-primary, text-supplementary)
+        merged_spool_lookup = _merge_spool_results(vision_spools, text_spools)
 
-        # Build merged spool lookup (text takes priority, vision fills gaps)
-        # Used both for augmenting ordering code definitions and merging into products
-        merged_spool_lookup = dict(vision_spool_lookup)  # vision as base
-        merged_spool_lookup.update(spool_lookup)  # text overwrites vision
+        # Combine discovered spool codes for injection into ordering code prompt
+        discovered_spool_codes = list(merged_spool_lookup.keys())
+
+        print(f"[DEBUG] Merged spool lookup: {len(merged_spool_lookup)} entries, "
+              f"codes: {sorted(set(s.get('spool_code', '').upper() for s in merged_spool_lookup.values() if s.get('spool_code')))}")
 
         # Step 6: Ordering code combinatorial generation
         # Extract ordering code breakdown tables and generate ALL product variants
