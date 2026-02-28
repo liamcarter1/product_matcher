@@ -1574,12 +1574,13 @@ spool types visible in the diagram that are NOT in this list."""
             model="gpt-4o",
             messages=[{"role": "user", "content": content}],
             response_format={"type": "json_object"},
-            max_tokens=4096,
+            max_tokens=16384,
             temperature=0.1,
         )
 
         raw_content = response.choices[0].message.content
-        logger.info("Vision ordering code response (first 2000 chars): %s", raw_content[:2000])
+        logger.info("Vision ordering code response length: %d chars (first 2000): %s",
+                     len(raw_content), raw_content[:2000])
         data = json.loads(raw_content)
         raw_codes = data.get("ordering_codes", [])
 

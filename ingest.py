@@ -206,6 +206,11 @@ class IngestionPipeline:
             list(spool_lookup.keys()) + list(vision_spool_lookup.keys())
         ))
 
+        # Build merged spool lookup (text takes priority, vision fills gaps)
+        # Used both for augmenting ordering code definitions and merging into products
+        merged_spool_lookup = dict(vision_spool_lookup)  # vision as base
+        merged_spool_lookup.update(spool_lookup)  # text overwrites vision
+
         # Step 6: Ordering code combinatorial generation
         # Extract ordering code breakdown tables and generate ALL product variants
         # Now receives spool codes discovered in Step 5 as additional reference data
@@ -261,6 +266,46 @@ class IngestionPipeline:
                     if ordering_defs:
                         self._last_extraction_method = "vision (text retry)"
                         print(f"[DEBUG] Vision retry found {len(ordering_defs)} definitions!")
+
+            # Step 6a: Augment spool segments with discovered spool codes
+            # GPT-4o often only finds 1 spool option from the ordering code diagram
+            # (e.g. "0A" as the example). The spool extraction steps found the FULL
+            # list of spool codes from symbol tables. Inject any missing codes into
+            # the spool segment of each ordering code definition.
+            if merged_spool_lookup:
+                for definition in ordering_defs:
+                    for seg in definition.segments:
+                        is_spool = (seg.segment_name == "spool_type" or
+                                    any(o.get("maps_to_field") == "spool_type"
+                                        for o in seg.options))
+                        if not is_spool:
+                            continue
+                        existing_codes = {
+                            o.get("code", "").upper() for o in seg.options
+                        }
+                        added = 0
+                        for code, spool_data in merged_spool_lookup.items():
+                            # merged_spool_lookup has both "2A" and "2A" without
+                            # leading zeros as keys — deduplicate
+                            raw_code = spool_data.get("spool_code", code).strip()
+                            if not raw_code or raw_code.upper() in existing_codes:
+                                continue
+                            existing_codes.add(raw_code.upper())
+                            desc = spool_data.get("center_condition", "") or \
+                                   spool_data.get("description", "")
+                            seg.options.append({
+                                "code": raw_code,
+                                "description": desc or f"Spool type {raw_code}",
+                                "maps_to_field": "spool_type",
+                                "maps_to_value": raw_code,
+                            })
+                            added += 1
+                        if added:
+                            seg.is_fixed = False  # ensure variable
+                            print(f"[DEBUG] Augmented spool segment for "
+                                  f"{definition.series}: +{added} codes "
+                                  f"(total: {len(seg.options)})")
+                        break  # only one spool segment per definition
 
             for definition in ordering_defs:
                 # Also look up spools by specific series (more precise)
@@ -329,10 +374,7 @@ class IngestionPipeline:
             traceback.print_exc()
 
         # Step 7: Merge spool function data into extracted products
-        # Combine text + vision spool lookups (text takes priority, vision fills gaps)
-        merged_spool_lookup = dict(vision_spool_lookup)  # vision as base
-        merged_spool_lookup.update(spool_lookup)  # text overwrites vision
-
+        # merged_spool_lookup was built earlier (before ordering code extraction)
         if merged_spool_lookup:
             spool_merged_count = 0
             for product in extracted_products:

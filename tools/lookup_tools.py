@@ -8,6 +8,7 @@ from typing import Optional
 from models import HydraulicProduct, MatchResult, ScoreBreakdown, CONFIDENCE_THRESHOLD
 from storage.product_db import ProductDB
 from storage.vector_store import VectorStore
+from tools.parse_tools import compute_canonical_pattern
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,88 @@ class LookupTools:
             "product": results[0][0],
             "match_score": results[0][1],
         }
+
+    def enrich_competitor_spool(self, product: HydraulicProduct) -> HydraulicProduct:
+        """Enrich a competitor product with spool function data for cross-manufacturer matching.
+
+        When a competitor product is looked up, it typically only has a raw spool_type
+        code (e.g. "D" for Bosch). This method:
+        1. Decodes the model code to extract/confirm the spool segment
+        2. Looks up the spool reference table for that manufacturer+series+code
+        3. Computes the canonical spool pattern for cross-manufacturer comparison
+
+        Without this, spool matching falls back to exact string comparison
+        ("D" vs "2A" = 0.0) instead of canonical pattern matching
+        ("BLOCKED|PA-BT|PB-AT" == "BLOCKED|PA-BT|PB-AT" = 1.0).
+        """
+        if not product.spool_type:
+            # Try to decode the model code to find the spool type
+            decoded = self.db.decode_model_code(product.model_code, product.company)
+            if decoded:
+                spool_code = decoded.get("_raw_spool_type") or decoded.get("spool_type")
+                if spool_code:
+                    product.spool_type = spool_code
+                    logger.info("Decoded spool_type '%s' from model code %s",
+                                spool_code, product.model_code)
+
+        if not product.spool_type:
+            return product
+
+        # Already has canonical pattern — no enrichment needed
+        extra = product.extra_specs or {}
+        if extra.get("canonical_spool_pattern"):
+            return product
+
+        spool_code = product.spool_type.strip()
+
+        # Look up spool reference table for this manufacturer
+        # Try with series prefix extracted from model code
+        refs = []
+        decoded = self.db.decode_model_code(product.model_code, product.company)
+        series = decoded.get("series", "") if decoded else ""
+        if series:
+            refs = self.db.get_spool_type_references(series, product.company)
+        if not refs:
+            # Broader search: all references for this manufacturer
+            refs = self.db.get_spool_type_references(manufacturer=product.company)
+
+        # Find the matching spool code in references
+        matched_ref = None
+        spool_upper = spool_code.upper()
+        for ref in refs:
+            if ref.get("spool_code", "").upper() == spool_upper:
+                matched_ref = ref
+                break
+
+        if matched_ref:
+            if product.extra_specs is None:
+                product.extra_specs = {}
+            # Use stored canonical pattern or compute one
+            canonical = matched_ref.get("canonical_pattern", "")
+            if not canonical:
+                canonical = compute_canonical_pattern(
+                    matched_ref.get("center_condition", ""),
+                    matched_ref.get("solenoid_a_function", ""),
+                    matched_ref.get("solenoid_b_function", ""),
+                )
+            if canonical:
+                product.extra_specs["canonical_spool_pattern"] = canonical
+            if matched_ref.get("center_condition"):
+                product.extra_specs.setdefault("center_condition",
+                                               matched_ref["center_condition"])
+            if matched_ref.get("solenoid_a_function"):
+                product.extra_specs.setdefault("solenoid_a_energised",
+                                               matched_ref["solenoid_a_function"])
+            if matched_ref.get("solenoid_b_function"):
+                product.extra_specs.setdefault("solenoid_b_energised",
+                                               matched_ref["solenoid_b_function"])
+            logger.info("Enriched competitor spool: %s %s -> canonical '%s'",
+                        product.company, spool_code, canonical)
+        else:
+            logger.info("No spool reference found for %s %s code '%s'",
+                        product.company, series, spool_code)
+
+        return product
 
     def find_my_company_equivalents(
         self,

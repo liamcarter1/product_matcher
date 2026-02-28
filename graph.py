@@ -276,6 +276,11 @@ class MatchGraph:
             return {"candidate_matches": []}
 
         competitor = HydraulicProduct(**product_dict)
+
+        # Enrich competitor spool data for cross-manufacturer matching
+        # Decodes model code, looks up spool reference table, computes canonical pattern
+        competitor = self.lookup.enrich_competitor_spool(competitor)
+
         matches = self.lookup.find_my_company_equivalents(
             competitor=competitor,
             my_company_name=MY_COMPANY_NAME,
