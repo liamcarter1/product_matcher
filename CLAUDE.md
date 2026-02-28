@@ -14,42 +14,69 @@ Two separate Gradio interfaces:
 ```bash
 cd product_matcher
 pip install -r requirements.txt
-# Set OPENAI_API_KEY in .env file
+# Set ANTHROPIC_API_KEY (and optionally OPENAI_API_KEY) in .env file
+# Set LLM_PROVIDER=anthropic (default) or LLM_PROVIDER=openai in .env
 python distributor_app.py   # or python app.py for combined
 ```
 
 ## Architecture
+
+### LLM Provider System (`tools/llm_client.py`)
+
+Dual-provider architecture — switch between Anthropic Claude and OpenAI via `LLM_PROVIDER` env var:
+
+| Tier | Anthropic (default) | OpenAI (fallback) | Used For |
+|------|--------------------|--------------------|----------|
+| `TIER_HIGH` | claude-opus-4-20250514 | gpt-4.1 | Ordering code extraction, vision spool analysis |
+| `TIER_MID` | claude-sonnet-4-20250514 | gpt-4.1-mini | Product extraction, spec extraction, chat responses |
+| `TIER_LOW` | claude-haiku-4-20250514 | gpt-4o-mini | Query parsing, classification |
+
+Key functions: `call_llm()`, `call_llm_json()`, `call_llm_tool()`, `get_client()`
 
 ### Data Flow
 ```
 PDF Upload (admin) -> Parse & Extract -> Ordering Code Generation -> Dedup -> Review -> Store
                               |                    |
                      Table extraction       Combinatorial generation
-                     LLM text extraction    from ordering code tables
+                     Agent-based extraction from ordering code tables
                      Header mapping         (all segment permutations)
-                                                          |
+                                                         |
                                             SQLite + Vector Store
-                                                          |
+                                                         |
 Distributor Query -> Fuzzy Code Lookup -> Identify Competitor Product
-                                                          |
+                                                         |
                                     Semantic Search + Spec Comparison
-                                                          |
+                                                         |
                                     Confidence-Ranked Results -> Chat Response
 ```
 
-### LangGraph Workflow (graph.py)
-7 nodes in a StateGraph with MemorySaver:
+### Specialized Agent Modules (`tools/agents/`)
+
+Each extraction task has its own agent module with focused prompts and the right model tier:
+
+| Agent | File | Tier | Replaces |
+|-------|------|------|----------|
+| Product extractor | `product_extractor.py` | MID | `extract_products_with_llm()` |
+| Spec extractor | `spec_extractor.py` | MID | `extract_model_code_patterns_with_llm()` |
+| Ordering code (text+vision) | `ordering_code.py` | HIGH | `extract_ordering_code_with_llm()` + `from_images()` |
+| Spool analyzer (text+vision) | `spool_analyzer.py` | HIGH/MID | `analyze_spool_functions()` + vision spool |
+| Cross-reference | `cross_reference.py` | MID | `extract_cross_references_with_llm()` |
+| Image reader | `image_reader.py` | MID | `extract_text_from_image()` |
+| Chat agent | `chat_agent.py` | LOW/MID | LangGraph `graph.py` |
+
+All agents call through `tools/llm_client.py` — never import openai/anthropic directly.
+
+### Chat Agent (`tools/agents/chat_agent.py`)
+Simple class-based state machine replacing the LangGraph StateGraph:
 ```
-START -> parse_query -> [routing by intent]
-  intent="info"      -> retrieve_kb_context -> generate_kb_answer -> END  (KB Q&A path)
-  intent="match"     -> lookup_competitor -> [routing by lookup result]
-    "confirmed"      -> generate_response -> END  (manual override)
-    "found"          -> find_equivalents -> generate_response -> END
-    "ambiguous"      -> clarify -> END  (ask user to pick)
-    "not_found"      -> generate_response -> END  (show "not found" message)
+ChatAgent.search_sync(message, thread_id) -> str
+
+  _parse_query(message)           # TIER_LOW — intent classification
+    intent="info"  -> _handle_kb_query()         # TIER_MID — KB Q&A
+    intent="match" -> _handle_product_matching()  # TIER_MID — matching + response
 ```
 
-LLM: `ChatOpenAI(model="gpt-4o-mini", temperature=0.1)`
+Reuses all prompts from `prompts.py` and `LookupTools` for DB/vector operations.
 
 ### Storage
 
@@ -80,7 +107,7 @@ SCORE_WEIGHTS (total = 1.0):
   pressure_match:       0.10  (numerical closeness)
   flow_match:           0.10  (numerical closeness)
   valve_size_match:     0.10  (fuzzy string match)
-  coil_voltage_match:   0.10  (fuzzy string match - "24VDC" ≈ "24 VDC")
+  coil_voltage_match:   0.10  (fuzzy string match - "24VDC" = "24 VDC")
   actuator_type_match:  0.08  (fuzzy string match)
   spool_function_match: 0.08  (fuzzy string match)
   mounting_match:       0.08  (fuzzy, falls back to mounting_pattern)
@@ -122,14 +149,14 @@ Supplementary extractor: **pdfplumber** — runs as a second pass to capture any
 LLM product extraction now processes the **full document** in 10,000-char batches (previously truncated at 12,000 chars, missing ~55% of a 19-page guide). Results are merged and deduplicated by model code.
 
 ### Text Chunking (`ingest.py`)
-- RecursiveCharacterTextSplitter: chunk_size=1500, overlap=300
+- Custom `_split_text_for_vectorstore()` using `chunk_text()` from `tools/agents/base.py`: chunk_size=1500, overlap=300
 
 ### Guide Indexing Strategy (`ingest.py:index_guide_text`)
 Two-pass indexing for maximum retrieval coverage:
 1. **Page-level chunks**: Each page is chunked individually with `[Page N of filename.pdf]` prefixes, preserving page context. This makes page-specific content (e.g. "Operating data" on page 6) directly searchable.
 2. **Full-document chunks**: The entire document is chunked as one continuous text to capture cross-page information.
 
-### KB Q&A Retrieval (`graph.py:retrieve_kb_context`)
+### KB Q&A Retrieval (`tools/agents/chat_agent.py:_handle_kb_query`)
 - Retrieves 15 results (not 8) for better coverage
 - Score threshold: 0.15 (not 0.3) — technical content embeddings often have modest similarity scores
 - Multi-pass filter relaxation: tries with filters first, then progressively removes company/model_code filters if no results found
@@ -142,9 +169,9 @@ Two-pass indexing for maximum retrieval coverage:
 directional_valves, proportional_directional_valves, pressure_valves, flow_valves,
 pumps, motors, cylinders, filters, accumulators, hoses_fittings, other
 ```
-Categories must be consistent across: `models.py` enum, `admin_app.py` CATEGORIES, `distributor_app.py` CATEGORIES + CATEGORY_MAP, `graph.py` regex fallback hints, `parse_tools.py` LLM prompts, `prompts.py` query parser prompt.
+Categories must be consistent across: `models.py` enum, `admin_app.py` CATEGORIES, `distributor_app.py` CATEGORIES + CATEGORY_MAP, `tools/agents/chat_agent.py` regex fallback hints, `tools/parse_tools.py` LLM prompts, `prompts.py` query parser prompt.
 
-### Configurable Values (`graph.py`)
+### Configurable Values (`tools/agents/chat_agent.py`)
 - `MY_COMPANY_NAME = "Danfoss"` - Company name used in prompts and responses
 - `SALES_CONTACT = "sales@danfoss.com | +44 (0)XXX XXX XXXX"` - Update with real contact number
 
@@ -155,18 +182,28 @@ product_matcher/
   app.py                 (~40 lines)  Combined HF Spaces entry point (auth-enabled)
   distributor_app.py    (~270 lines)  Distributor chat UI (Gradio 5/6 compat, dynamic dropdowns)
   admin_app.py          (~605 lines)  Admin console UI (interactive tables, auth, gr.State)
-  graph.py              (~650 lines)  LangGraph matching workflow (7 nodes, diagnostics)
   ingest.py             (~280 lines)  PDF ingestion pipeline (two-pass guide indexing) + ordering code generation
   models.py             (~240 lines)  Pydantic models & constants (incl. OrderingCode*)
   prompts.py            (~100 lines)  LLM system prompts (incl. KB_QA_PROMPT)
   requirements.txt       (32 lines)   Dependencies
-  .env                               OPENAI_API_KEY + auth credentials (gitignored)
+  .env                               API keys + auth credentials (gitignored)
   storage/
     product_db.py       (~630 lines)  SQLite CRUD + fuzzy lookup + fuzzy string matching
     vector_store.py     (~400 lines)  Numpy vector store + reranking (atomic saves)
   tools/
+    llm_client.py       (~290 lines)  Dual-provider LLM client (Anthropic/OpenAI, tier-based)
     lookup_tools.py     (~250 lines)  Product identification & matching (with DB fallback)
-    parse_tools.py      (~620 lines)  PDF extraction (PyMuPDF + pdfplumber + pypdf fallback) + batched LLM extraction + ordering code combinatorial generation
+    parse_tools.py      (~620 lines)  PDF extraction (PyMuPDF + pdfplumber + pypdf fallback) + ordering code combinatorial generation (non-LLM functions only)
+    agents/
+      __init__.py                     Package init
+      base.py           (~155 lines)  Shared utilities (chunking, image encoding, vision content builders)
+      product_extractor.py (~140 lines) Batched product extraction from text
+      spec_extractor.py    (~80 lines)  Model code pattern extraction
+      ordering_code.py    (~230 lines)  Ordering code extraction (text + vision) — MOST CRITICAL
+      spool_analyzer.py   (~280 lines)  Spool function analysis (text + vision)
+      cross_reference.py   (~80 lines)  Cross-reference table extraction
+      image_reader.py     (~100 lines)  Camera/photo label reading
+      chat_agent.py       (~380 lines)  Distributor chat (replaces LangGraph graph.py)
   data/                              Gitignored runtime data (.db, .npz, .json)
 ```
 
@@ -194,11 +231,14 @@ All `gr.Dataframe` components in `admin_app.py` are `interactive=True` so cell t
 ### numpy argpartition
 `np.argpartition(-scores, k)` fails when `k >= len(scores)`. Always check bounds first, fallback to `np.argsort`.
 
-### OpenAI Client
-Don't initialize at module level. Use lazy `_get_client()` pattern (`tools/parse_tools.py:24-28`) to avoid crashes when API key isn't set at import time.
+### LLM Client Initialization
+All LLM calls go through `tools/llm_client.py`. The client is lazily initialised via `get_client()` to avoid crashes when API keys aren't set at import time. Agent modules should never import `anthropic` or `openai` directly.
+
+### Anthropic JSON Handling
+Anthropic has no native JSON mode. `call_llm_json()` handles this by: appending "Return ONLY valid JSON" to the system prompt, stripping markdown fences from responses, and retrying with a fix-up prompt on parse failure. For guaranteed structured output, use `call_llm_tool()` which leverages Anthropic's tool use feature.
 
 ### Python 3.14
-ChromaDB is incompatible (pydantic v1). The vector store uses numpy instead. The `langchain_core` pydantic v1 deprecation warning is expected and harmless.
+ChromaDB is incompatible (pydantic v1). The vector store uses numpy instead.
 
 ### Admin State
 `pending_extractions` and `pending_metadata` in `admin_app.py` use `gr.State({})` — session-scoped and safe for concurrent admin users.
@@ -216,15 +256,15 @@ ChromaDB is incompatible (pydantic v1). The vector store uses numpy instead. The
 ### Adding a New Competitor
 Upload their catalogue/user guide PDF via the admin console. The pipeline:
 1. pdfplumber extracts tables -> maps ~90 header patterns to product fields
-2. PyMuPDF (fitz) extracts text from ALL pages (supplemented by pdfplumber) -> GPT-4o-mini structures products (31 spec fields) in batches covering the full document
-3. GPT-4o-mini extracts ordering code breakdown tables -> combinatorial generator creates all product variants (capped at 500)
-4. For user guides/datasheets: GPT-4o-mini also extracts model code decode patterns
+2. PyMuPDF (fitz) extracts text from ALL pages (supplemented by pdfplumber) -> agent structures products (31 spec fields) in batches covering the full document
+3. Ordering code agent extracts ordering code breakdown tables -> combinatorial generator creates all product variants (capped at 500)
+4. For user guides/datasheets: spec extractor agent also extracts model code decode patterns
 5. Deduplication merges products from all sources (keeps richest specs)
 6. Admin reviews extracted products (with Source column: table/llm/ordering_code), then confirms to index
 
 ### Ordering Code Combinatorial Generation (`parse_tools.py`)
 When a PDF contains "Ordering code" / "How to Order" tables:
-- `extract_ordering_code_with_llm()` identifies segment positions, fixed/variable flags, separators, and field mappings
+- `ordering_code.py` agent identifies segment positions, fixed/variable flags, separators, and field mappings
 - `generate_products_from_ordering_code()` creates all permutations via `itertools.product()`
 - `assemble_model_code()` reconstructs model codes from a template like `{01}{02}{03}-{04}/{05}`
 - Empty "no code" options handled (double separators cleaned up)
@@ -234,21 +274,19 @@ When a PDF contains "Ordering code" / "How to Order" tables:
 ### Field Alias Rescue (`ingest.py`)
 `_FIELD_ALIASES` maps ~60 common LLM/table output names to canonical HydraulicProduct fields (e.g. "pressure" -> "max_pressure_bar", "voltage" -> "coil_voltage"). Applied before product construction to catch non-standard field names.
 
-### No-Match Diagnostics (`graph.py:generate_response`)
+### No-Match Diagnostics (`tools/agents/chat_agent.py:_handle_product_matching`)
 When `find_equivalents` returns no matches, the response includes diagnostic information:
 - How many Danfoss products are in the database
 - How many are indexed in the vector store
 - The competitor product's category (so the admin knows what to upload)
 - Actionable suggestions (upload Danfoss products, re-index, check category coverage)
 
-The diagnostics are gathered in `find_equivalents` and passed via `_diagnostics` in the state dict.
-
 ### Adding a New Product Category
 Must be added in **6 places**:
 1. `models.py` — `ProductCategory` enum
 2. `admin_app.py` — `CATEGORIES` list
 3. `distributor_app.py` — `CATEGORIES` list + `CATEGORY_MAP` dict
-4. `graph.py` — `category_hints` dict in `_regex_parse_fallback()`
+4. `tools/agents/chat_agent.py` — `category_hints` dict in `_regex_parse_fallback()`
 5. `tools/parse_tools.py` — LLM prompt category lists (both extraction and ordering code prompts)
 6. `prompts.py` — `QUERY_PARSER_PROMPT` category list
 
@@ -257,13 +295,20 @@ Must be added in **6 places**:
 - Confidence threshold: `CONFIDENCE_THRESHOLD` in `models.py`
 - Comparison logic: `spec_comparison()` in `storage/product_db.py`
 - String matching tolerance: `_exact_match()` in `storage/product_db.py`
-- Graph routing thresholds: `_route_after_lookup()` in `graph.py`
+- Chat routing thresholds: `_route_after_lookup()` in `tools/agents/chat_agent.py`
 - Fuzzy match thresholds: `identify_competitor_product()` in `tools/lookup_tools.py`
 - DB fallback: `find_my_company_equivalents()` in `tools/lookup_tools.py`
 
+### Adding a New Agent
+1. Create `tools/agents/my_agent.py`
+2. Import `call_llm` / `call_llm_json` / `call_llm_tool` from `tools.llm_client`
+3. Choose the right tier (`TIER_HIGH` for critical, `TIER_MID` for standard, `TIER_LOW` for fast)
+4. For vision tasks, use `build_image_block()` / `build_vision_content()` from `tools.agents.base`
+5. Update `ingest.py` imports if the agent replaces an extraction function
+
 ## Dependencies
 
-Core: openai, langchain-openai, langgraph, sentence-transformers, numpy, pydantic, gradio
+Core: anthropic (primary), openai (fallback), sentence-transformers, numpy, pydantic, gradio
 PDF: pymupdf (primary extractor), pypdf (fallback), pdfplumber (tables + supplementary text)
 Matching: fuzzywuzzy, python-Levenshtein
 Data: pandas (admin CSV export)
@@ -291,9 +336,10 @@ The following security and resilience fixes have been applied:
 - Atomic file writes in vector store (temp file + rename pattern) to prevent corruption on crash
 
 ### LLM Resilience
-- `graph.py:parse_query()` wraps the LLM call in try/except with a regex-based fallback parser
-- If OpenAI is unreachable, the regex fallback extracts model codes, competitor names, and categories from user input
+- `chat_agent.py:_parse_query()` wraps the LLM call in try/except with a regex-based fallback parser
+- If the LLM provider is unreachable, the regex fallback extracts model codes, competitor names, and categories from user input
 - Cross-encoder reranking scores are clamped to `[0.0, 1.0]` to prevent Pydantic validation errors
+- `llm_client.py` includes exponential backoff retry (3 attempts) for rate limits
 
 ### Configurable Binding
 - All apps use env vars for host/port — critical for HF Spaces (`0.0.0.0` binding required)
@@ -303,7 +349,9 @@ The following security and resilience fixes have been applied:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENAI_API_KEY` | (required) | Used by GPT-4o-mini for query parsing, product extraction, and comparison narratives |
+| `ANTHROPIC_API_KEY` | (required if LLM_PROVIDER=anthropic) | Anthropic API key for Claude models |
+| `OPENAI_API_KEY` | (required if LLM_PROVIDER=openai) | OpenAI API key for GPT models |
+| `LLM_PROVIDER` | `anthropic` | LLM provider: `anthropic` or `openai` |
 | `ADMIN_USERNAME` | (none) | Login username for Gradio auth (optional, but recommended for deployed apps) |
 | `ADMIN_PASSWORD` | (none) | Login password for Gradio auth (optional, but recommended for deployed apps) |
 | `ADMIN_HOST` | `127.0.0.1` | Bind address for admin_app.py |

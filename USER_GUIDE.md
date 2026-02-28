@@ -25,7 +25,7 @@ A comprehensive guide for staff and distributors using the ProductMatchPro hydra
 ### Prerequisites
 
 - Python 3.10 or later
-- An OpenAI API key (used for PDF extraction and query parsing)
+- An Anthropic API key (default) or OpenAI API key (used for PDF extraction and query parsing)
 
 ### Installation
 
@@ -39,10 +39,16 @@ pip install -r requirements.txt
 Create a file called `.env` in the `product_matcher/` folder with the following content:
 
 ```
-OPENAI_API_KEY=sk-your-api-key-here
+# Anthropic (default provider - recommended)
+ANTHROPIC_API_KEY=sk-ant-your-api-key-here
+LLM_PROVIDER=anthropic
+
+# OR OpenAI (fallback provider)
+# OPENAI_API_KEY=sk-your-api-key-here
+# LLM_PROVIDER=openai
 ```
 
-Replace `sk-your-api-key-here` with your actual OpenAI API key. This file is gitignored and will not be committed to version control.
+Replace the API key with your actual key. The `LLM_PROVIDER` setting controls which provider is used (defaults to `anthropic`). This file is gitignored and will not be committed to version control.
 
 ### Setting Up Authentication (Recommended)
 
@@ -131,7 +137,7 @@ The left side contains the upload form, and the right side shows the results.
    The system will:
    - Parse the PDF using **PyMuPDF** (for high-quality text from ALL pages), supplemented by **pdfplumber** (for structured tables and any additional text). This dual-extractor approach ensures complex layouts, multi-column text, operating data tables, and technical specifications are all captured
    - If tables are found, map the table columns to product fields using ~90 header patterns (model code, pressure, flow, voltage, seal material, etc.)
-   - Send text to GPT-4o-mini for structured product extraction (31 spec fields). **The full document is processed in batches** — not truncated — so products from all pages are captured, not just the first few
+   - Send text to the LLM (Claude Sonnet by default, or GPT-4.1-mini with OpenAI) for structured product extraction (31 spec fields). **The full document is processed in batches** — not truncated — so products from all pages are captured, not just the first few
    - **Ordering code generation:** Detect "Ordering code" / "How to Order" breakdown tables and generate ALL product variants by combining variable segments (e.g. 4 flow rates x 2 seals x 2 interfaces = 16 products)
    - For user guides/datasheets: extract model code decode patterns for future use
    - **Index guide text using two-pass strategy:** Page-level chunks (with `[Page N]` metadata for direct page retrieval) plus full-document chunks (for cross-page context). Chunk size: 1500 characters with 300-character overlap
@@ -185,7 +191,7 @@ Position 11: interface (variable) - A1 (command ±10V), F1 (command 4-20mA)
 Position 12: special (variable)   - (none), -967 (with pressure compensation)
 ```
 
-The system uses GPT-4o-mini to parse these tables, then **generates ALL valid combinations** as separate product entries. In this example: 4 flow rates x 2 seals x 2 interfaces x 2 specials = **32 unique products**, each with:
+The system uses the LLM (Claude Opus by default for this critical task) to parse these tables, then **generates ALL valid combinations** as separate product entries. In this example: 4 flow rates x 2 seals x 2 interfaces x 2 specials = **32 unique products**, each with:
 - A fully assembled model code (e.g. `4WREE6E16-3XV/24A1`)
 - All spec fields populated from the segment mappings (e.g. `max_flow_lpm=16, seal_material=FKM, coil_voltage=24VDC`)
 
@@ -339,7 +345,7 @@ Click **Refresh** to update the counts.
 
 The Settings tab also displays the current system configuration:
 - **Confidence Threshold:** 75% - Matches below this are flagged as uncertain (changeable in `models.py` by editing `CONFIDENCE_THRESHOLD`)
-- **Sales Contact:** The contact details shown to distributors when confidence is below threshold (changeable in `graph.py` by editing `SALES_CONTACT`)
+- **Sales Contact:** The contact details shown to distributors when confidence is below threshold (changeable in `tools/agents/chat_agent.py` by editing `SALES_CONTACT`)
 - **Model Code Patterns:** Automatically extracted from user guide uploads
 
 ---
@@ -507,10 +513,11 @@ This order ensures the richest possible product data for accurate matching. Data
 - Check the terminal logs for per-page extraction details — the system now logs how many pages each extractor processed
 
 **"Error processing PDF" or "An error occurred during processing"**
-- Check that your OpenAI API key is set correctly in the `.env` file
+- Check that your API key is set correctly in the `.env` file (`ANTHROPIC_API_KEY` for Claude, or `OPENAI_API_KEY` for OpenAI)
+- Check that `LLM_PROVIDER` matches the key you have set (defaults to `anthropic`)
 - Check your internet connection (the LLM extraction requires API access)
 - Check the terminal/server logs for detailed error messages (the web UI shows sanitised errors for security)
-- If you see "API configuration error", your OpenAI API key is missing or invalid
+- If you see "API configuration error", your API key is missing or invalid
 
 **Search returns no results or "couldn't find a matching equivalent"**
 - The system now explains why no match was found (no Danfoss products, empty index, or category mismatch) — read the response carefully for guidance
@@ -541,9 +548,10 @@ This order ensures the richest possible product data for accurate matching. Data
 - This means `ADMIN_USERNAME` and `ADMIN_PASSWORD` are set in your environment or `.env` file
 - Enter the credentials you configured, or remove these variables from `.env` to disable authentication
 
-**"OPENAI_API_KEY not set" errors**
+**"API key not set" errors**
 - Create a `.env` file in the `product_matcher/` directory
-- Ensure the file contains: `OPENAI_API_KEY=sk-your-actual-key`
+- Ensure the file contains: `ANTHROPIC_API_KEY=sk-ant-your-actual-key` (or `OPENAI_API_KEY=sk-your-actual-key` if using OpenAI)
+- Ensure `LLM_PROVIDER` is set correctly (defaults to `anthropic`)
 - Restart the application after editing `.env`
 
 **PDF upload rejected ("not a valid PDF file" or "too large")**
@@ -670,7 +678,7 @@ The Docker build caches pip install layers, so rebuilds after code-only changes 
 python -m pytest tests/ -v
 ```
 
-The test suite covers 156 tests across ingestion (type coercion, field aliases, deduplication), PDF parsing (ordering code generation, model code assembly, LLM prompt validation), and storage (CRUD, spec comparison, fuzzy lookup, model code decoding).
+The test suite covers 320 tests across ingestion (type coercion, field aliases, deduplication), PDF parsing (ordering code generation, model code assembly, LLM prompt validation), storage (CRUD, spec comparison, fuzzy lookup, model code decoding), and agent modules.
 
 ---
 
