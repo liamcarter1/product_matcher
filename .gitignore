@@ -4,6 +4,7 @@ __pycache__/
 data/*.db
 data/*.npz
 data/*.json
+!data/spool_seed.json
 data/*.csv
 !data/.gitkeep
 .env

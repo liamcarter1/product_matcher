@@ -1,0 +1,193 @@
+{
+  "version": "1.0",
+  "description": "Standard spool types for common hydraulic valve series. Loaded on first startup to eliminate cold-start problem and avoid unreliable vision extraction.",
+  "seed_data": [
+    {
+      "series_prefix": "DG4V",
+      "manufacturer": "Danfoss",
+      "spool_code": "0A",
+      "description": "Open center, standard crossover",
+      "center_condition": "All ports open to tank",
+      "solenoid_a_function": "P to A, B to T",
+      "solenoid_b_function": "P to B, A to T",
+      "canonical_pattern": "OPEN|PA-BT|PB-AT",
+      "is_primary": true
+    },
+    {
+      "series_prefix": "DG4V",
+      "manufacturer": "Danfoss",
+      "spool_code": "2A",
+      "description": "Closed center, standard crossover",
+      "center_condition": "All ports blocked",
+      "solenoid_a_function": "P to A, B to T",
+      "solenoid_b_function": "P to B, A to T",
+      "canonical_pattern": "BLOCKED|PA-BT|PB-AT",
+      "is_primary": true
+    },
+    {
+      "series_prefix": "DG4V",
+      "manufacturer": "Danfoss",
+      "spool_code": "2AL",
+      "description": "Closed center, standard crossover with lapped spool",
+      "center_condition": "All ports blocked (lapped)",
+      "solenoid_a_function": "P to A, B to T",
+      "solenoid_b_function": "P to B, A to T",
+      "canonical_pattern": "BLOCKED|PA-BT|PB-AT",
+      "is_primary": false
+    },
+    {
+      "series_prefix": "DG4V",
+      "manufacturer": "Danfoss",
+      "spool_code": "2N",
+      "description": "Closed center, no crossover",
+      "center_condition": "All ports blocked",
+      "solenoid_a_function": "P to A, B to T",
+      "solenoid_b_function": "P to B, A to T",
+      "canonical_pattern": "BLOCKED|PA-BT|PB-AT",
+      "is_primary": false
+    },
+    {
+      "series_prefix": "DG4V",
+      "manufacturer": "Danfoss",
+      "spool_code": "2C",
+      "description": "Closed center, no crossover in transition",
+      "center_condition": "All ports blocked",
+      "solenoid_a_function": "P to A, B to T",
+      "solenoid_b_function": "P to B, A to T",
+      "canonical_pattern": "BLOCKED|PA-BT|PB-AT",
+      "is_primary": true
+    },
+    {
+      "series_prefix": "DG4V",
+      "manufacturer": "Danfoss",
+      "spool_code": "0C",
+      "description": "Open center, no crossover in transition",
+      "center_condition": "All ports open to tank",
+      "solenoid_a_function": "P to A, B to T",
+      "solenoid_b_function": "P to B, A to T",
+      "canonical_pattern": "OPEN|PA-BT|PB-AT",
+      "is_primary": true
+    },
+    {
+      "series_prefix": "DG4V",
+      "manufacturer": "Danfoss",
+      "spool_code": "6C",
+      "description": "Tandem center",
+      "center_condition": "P and T connected, A and B blocked",
+      "solenoid_a_function": "P to A, B to T",
+      "solenoid_b_function": "P to B, A to T",
+      "canonical_pattern": "TANDEM|PA-BT|PB-AT",
+      "is_primary": true
+    },
+    {
+      "series_prefix": "DG4V",
+      "manufacturer": "Danfoss",
+      "spool_code": "6CL",
+      "description": "Tandem center with lapped spool",
+      "center_condition": "P and T connected, A and B blocked (lapped)",
+      "solenoid_a_function": "P to A, B to T",
+      "solenoid_b_function": "P to B, A to T",
+      "canonical_pattern": "TANDEM|PA-BT|PB-AT",
+      "is_primary": false
+    },
+    {
+      "series_prefix": "DG4V",
+      "manufacturer": "Danfoss",
+      "spool_code": "H",
+      "description": "Float center",
+      "center_condition": "A, B and T connected, P blocked",
+      "solenoid_a_function": "P to A, B to T",
+      "solenoid_b_function": "P to B, A to T",
+      "canonical_pattern": "FLOAT|PA-BT|PB-AT",
+      "is_primary": true
+    },
+    {
+      "series_prefix": "DG4V",
+      "manufacturer": "Danfoss",
+      "spool_code": "4C",
+      "description": "Regenerative center",
+      "center_condition": "P, A and B connected, T blocked",
+      "solenoid_a_function": "P to A, B to T",
+      "solenoid_b_function": "P to B, A to T",
+      "canonical_pattern": "REGEN|PA-BT|PB-AT",
+      "is_primary": false
+    },
+    {
+      "series_prefix": "DG4V",
+      "manufacturer": "Danfoss",
+      "spool_code": "8C",
+      "description": "Semi-open center",
+      "center_condition": "P blocked, A, B and T connected",
+      "solenoid_a_function": "P to A, B to T",
+      "solenoid_b_function": "P to B, A to T",
+      "canonical_pattern": "FLOAT|PA-BT|PB-AT",
+      "is_primary": false
+    },
+    {
+      "series_prefix": "DG4V",
+      "manufacturer": "Danfoss",
+      "spool_code": "10C",
+      "description": "Open center with blocked work ports in transition",
+      "center_condition": "All ports open to tank",
+      "solenoid_a_function": "P to A, B to T",
+      "solenoid_b_function": "P to B, A to T",
+      "canonical_pattern": "OPEN|PA-BT|PB-AT",
+      "is_primary": false
+    },
+    {
+      "series_prefix": "DG4V",
+      "manufacturer": "Danfoss",
+      "spool_code": "33C",
+      "description": "Partial crossover center",
+      "center_condition": "P to T, A and B blocked",
+      "solenoid_a_function": "P to A, B to T",
+      "solenoid_b_function": "P to B, A to T",
+      "canonical_pattern": "TANDEM|PA-BT|PB-AT",
+      "is_primary": false
+    },
+    {
+      "series_prefix": "DG4V",
+      "manufacturer": "Danfoss",
+      "spool_code": "36",
+      "description": "Motor spool, open in center",
+      "center_condition": "A and B connected, P and T connected",
+      "solenoid_a_function": "P to A, B to T",
+      "solenoid_b_function": "P to B, A to T",
+      "canonical_pattern": "OPEN|PA-BT|PB-AT",
+      "is_primary": false
+    },
+    {
+      "series_prefix": "DG4V",
+      "manufacturer": "Danfoss",
+      "spool_code": "23",
+      "description": "Detented, spring offset closed center",
+      "center_condition": "All ports blocked",
+      "solenoid_a_function": "P to A, B to T",
+      "solenoid_b_function": "P to B, A to T",
+      "canonical_pattern": "BLOCKED|PA-BT|PB-AT",
+      "is_primary": false
+    },
+    {
+      "series_prefix": "DG4V",
+      "manufacturer": "Danfoss",
+      "spool_code": "2B",
+      "description": "Closed center, B port metered",
+      "center_condition": "All ports blocked",
+      "solenoid_a_function": "P to A, B to T",
+      "solenoid_b_function": "P to B, A to T (metered)",
+      "canonical_pattern": "BLOCKED|PA-BT|PB-AT",
+      "is_primary": false
+    },
+    {
+      "series_prefix": "DG4V",
+      "manufacturer": "Danfoss",
+      "spool_code": "6B",
+      "description": "Tandem center, B port metered",
+      "center_condition": "P and T connected, A and B blocked",
+      "solenoid_a_function": "P to A, B to T",
+      "solenoid_b_function": "P to B, A to T (metered)",
+      "canonical_pattern": "TANDEM|PA-BT|PB-AT",
+      "is_primary": false
+    }
+  ]
+}

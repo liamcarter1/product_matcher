@@ -34,6 +34,7 @@ from tools.parse_tools import (
     _get_pdf_page_count,
     _classify_spool_pages,
     _merge_spool_results,
+    _merge_spool_results_v2,
 )
 from storage.product_db import ProductDB
 from storage.vector_store import VectorStore
@@ -167,41 +168,45 @@ class IngestionPipeline:
                 except Exception as e:
                     print(f"Error storing pattern: {e}")
 
-        # Step 5: Spool extraction FIRST (before ordering codes)
-        # Uses redesigned three-phase pipeline:
-        #   5a: Page classification (zero API cost — text heuristics)
-        #   5b: Batched multi-page vision extraction (primary, GPT-4o)
-        #   5c: Text-based analysis (supplementary, fills gaps only)
-        #   5d: UNION merge (vision wins, text adds missing codes)
-        vision_spools: list[dict] = []
+        # Step 5: Spool extraction — REFERENCE-FIRST pipeline
+        # Priority: DB reference > text analysis > vision (last resort)
+        #   5a: Infer series prefix from text + query spool_type_reference
+        #   5b: Text-based spool analysis (secondary, discovers new codes)
+        #   5c: Vision extraction ONLY if 5a+5b found ZERO spools
+        #   5d: Three-way merge: reference > text > vision
+        reference_spools: list[dict] = []
         text_spools: list[dict] = []
+        vision_spools: list[dict] = []
 
-        # Step 5a: Classify pages for spool content (zero-cost heuristics)
-        page_classifications = _classify_spool_pages(pdf_path, pages)
-        spool_page_count = sum(
-            1 for v in page_classifications.values()
-            if v in ("SPOOL_CONTENT", "MAYBE_SPOOL")
+        # Step 5a: Query spool_type_reference (zero API cost)
+        inferred_series = self._infer_series_prefix_from_text(
+            full_text, metadata.company,
         )
-        print(f"[DEBUG] Page classification: {spool_page_count}/{total_page_count} "
-              f"pages have potential spool content")
+        if inferred_series:
+            print(f"[DEBUG] Inferred series prefix: {inferred_series}")
 
-        # Step 5b: Batched multi-page vision extraction (primary)
-        try:
-            known_spools_db = self.db.get_spool_codes_for_series(
+        # Try series-specific lookup first, then manufacturer-wide
+        if inferred_series:
+            reference_spools = self.db.get_spool_type_references(
+                inferred_series, metadata.company,
+            )
+        if not reference_spools:
+            reference_spools = self.db.get_spool_type_references(
                 metadata.category or "", metadata.company,
             )
-            vision_spools = extract_spool_symbols_from_pdf_v2(
-                pdf_path, metadata.company,
-                page_classifications=page_classifications,
-                known_spool_codes=known_spools_db if known_spools_db else None,
-                retry_on_low_count=True,
+        if not reference_spools:
+            # Broadest: all refs for this manufacturer
+            reference_spools = self.db.get_spool_type_references(
+                manufacturer=metadata.company,
             )
-            if vision_spools:
-                print(f"Vision spool extraction v2: {len(vision_spools)} symbols found")
-        except Exception as e:
-            logger.warning("Vision spool extraction v2 error (non-fatal): %s", e)
 
-        # Step 5c: Text-based spool analysis (supplementary)
+        if reference_spools:
+            print(f"Reference DB: {len(reference_spools)} spool types found "
+                  f"for {metadata.company}")
+            logger.info("Reference-first: %d spool refs from DB for %s",
+                        len(reference_spools), metadata.company)
+
+        # Step 5b: Text-based spool analysis (always runs — discovers new codes)
         if full_text:
             try:
                 text_spools = analyze_spool_functions(full_text, metadata.company)
@@ -210,8 +215,35 @@ class IngestionPipeline:
             except Exception as e:
                 print(f"Error in spool function analysis: {e}")
 
-        # Step 5d: UNION merge (vision-primary, text-supplementary)
-        merged_spool_lookup = _merge_spool_results(vision_spools, text_spools)
+        # Step 5c: Vision extraction — ONLY if reference + text found ZERO spools
+        if not reference_spools and not text_spools:
+            print("[DEBUG] No reference or text spools — falling back to vision (last resort)")
+            page_classifications = _classify_spool_pages(pdf_path, pages)
+            try:
+                known_spools_db = self.db.get_spool_codes_for_series(
+                    metadata.category or "", metadata.company,
+                )
+                vision_spools = extract_spool_symbols_from_pdf_v2(
+                    pdf_path, metadata.company,
+                    page_classifications=page_classifications,
+                    known_spool_codes=known_spools_db if known_spools_db else None,
+                    retry_on_low_count=True,
+                )
+                if vision_spools:
+                    # Flag all vision results as unconfirmed
+                    for vs in vision_spools:
+                        vs["source"] = "vision_unconfirmed"
+                    print(f"Vision spool extraction (last resort): "
+                          f"{len(vision_spools)} symbols found")
+            except Exception as e:
+                logger.warning("Vision spool extraction error (non-fatal): %s", e)
+        else:
+            print("[DEBUG] Skipping vision — reference/text data available")
+
+        # Step 5d: Three-way merge (reference > text > vision)
+        merged_spool_lookup = _merge_spool_results_v2(
+            reference_spools, text_spools, vision_spools,
+        )
 
         # Combine discovered spool codes for injection into ordering code prompt
         discovered_spool_codes = list(merged_spool_lookup.keys())
@@ -631,6 +663,32 @@ class IngestionPipeline:
                         count, series_prefix, metadata.filename)
             print(f"Auto-learned {count} spool types for series {series_prefix}")
         return count
+
+    def _infer_series_prefix_from_text(
+        self, text: str, company: str,
+    ) -> str | None:
+        """Infer product series prefix from document text.
+
+        Checks the first ~10 000 characters of the extracted text for known
+        series prefixes stored in the ``spool_type_reference`` table.
+        Returns the longest matching prefix, or ``None`` if no match.
+        """
+        if not text:
+            return None
+
+        # Get all known series prefixes for this manufacturer
+        all_refs = self.db.get_spool_type_references(manufacturer=company)
+        known_prefixes = sorted(
+            {r["series_prefix"] for r in all_refs if r.get("series_prefix")},
+            key=len, reverse=True,  # longest first for most specific match
+        )
+
+        text_upper = text[:10_000].upper()
+        for prefix in known_prefixes:
+            if prefix.upper() in text_upper:
+                return prefix
+
+        return None
 
     @staticmethod
     def _infer_series_from_products(

@@ -28,6 +28,7 @@ from tools.parse_tools import (
     _classify_spool_pages,
     _merge_spool_results,
     _deduplicate_spools,
+    _merge_spool_results_v2,
     HEADER_MAPPINGS,
     _VALID_SPEC_FIELDS,
     MAX_COMBINATIONS,
@@ -1660,3 +1661,99 @@ class TestMergeSpoolResults:
         result = _merge_spool_results(vision, [])
         assert "0A" in result
         assert "A" in result
+
+
+class TestMergeSpoolResultsV2:
+    """Tests for _merge_spool_results_v2 — three-way merge with priority."""
+
+    def test_reference_highest_priority(self):
+        """Reference data should never be overwritten."""
+        ref = [{"spool_code": "2A", "center_condition": "From DB reference",
+                "solenoid_a_function": "P to A, B to T"}]
+        text = [{"spool_code": "2A", "center_condition": "From text",
+                 "solenoid_a_function": "Wrong"}]
+        vision = [{"spool_code": "2A", "center_condition": "From vision",
+                   "solenoid_a_function": "Also wrong"}]
+        result = _merge_spool_results_v2(ref, text, vision)
+        assert result["2A"]["center_condition"] == "From DB reference"
+        assert result["2A"]["solenoid_a_function"] == "P to A, B to T"
+
+    def test_text_adds_missing_codes(self):
+        """Text should add codes not in reference."""
+        ref = [{"spool_code": "2A", "center_condition": "Blocked"}]
+        text = [{"spool_code": "6C", "center_condition": "Tandem"}]
+        result = _merge_spool_results_v2(ref, text, [])
+        assert "2A" in result
+        assert "6C" in result
+        assert result["6C"]["source"] == "text"
+
+    def test_vision_lowest_priority(self):
+        """Vision should be tagged as unconfirmed and not overwrite."""
+        ref = [{"spool_code": "2A", "center_condition": "Blocked"}]
+        vision = [{"spool_code": "H", "center_condition": "Float"}]
+        result = _merge_spool_results_v2(ref, [], vision)
+        assert result["2A"]["source"] == "reference"
+        assert result["H"]["source"] == "vision_unconfirmed"
+
+    def test_empty_sources(self):
+        """All empty sources should return empty dict."""
+        result = _merge_spool_results_v2([], [], [])
+        assert result == {}
+
+    def test_text_fills_empty_reference_fields(self):
+        """Text should fill empty fields in reference entries."""
+        ref = [{"spool_code": "2A", "center_condition": "Blocked",
+                "solenoid_a_function": ""}]
+        text = [{"spool_code": "2A", "center_condition": "Different",
+                 "solenoid_a_function": "P to A, B to T"}]
+        result = _merge_spool_results_v2(ref, text, [])
+        assert result["2A"]["center_condition"] == "Blocked"  # Not overwritten
+        assert result["2A"]["solenoid_a_function"] == "P to A, B to T"  # Filled
+
+    def test_leading_zero_aliases(self):
+        """Should create aliases without leading zeros."""
+        ref = [{"spool_code": "0A", "center_condition": "Open"}]
+        result = _merge_spool_results_v2(ref, [], [])
+        assert "0A" in result
+        assert "A" in result
+
+
+class TestSeedDataFile:
+    """Test that the seed data file is valid."""
+
+    def test_seed_file_valid_json(self):
+        """data/spool_seed.json should be valid JSON with expected structure."""
+        from pathlib import Path
+        seed_path = Path(__file__).parent.parent / "data" / "spool_seed.json"
+        assert seed_path.exists(), f"Seed file not found at {seed_path}"
+
+        with open(seed_path, "r") as f:
+            data = json.load(f)
+
+        assert "seed_data" in data
+        entries = data["seed_data"]
+        assert len(entries) >= 10, f"Expected at least 10 seed entries, got {len(entries)}"
+
+        # Check all entries have required fields
+        required = ["series_prefix", "manufacturer", "spool_code", "center_condition"]
+        for entry in entries:
+            for field in required:
+                assert field in entry, f"Missing field '{field}' in entry: {entry}"
+
+    def test_seed_has_danfoss_dgv4(self):
+        """Seed should contain Danfoss DG4V spool types."""
+        from pathlib import Path
+        seed_path = Path(__file__).parent.parent / "data" / "spool_seed.json"
+        with open(seed_path, "r") as f:
+            data = json.load(f)
+
+        danfoss_codes = [
+            e["spool_code"] for e in data["seed_data"]
+            if e.get("manufacturer") == "Danfoss"
+        ]
+        # Should have at least the key spool types
+        assert "2A" in danfoss_codes
+        assert "2C" in danfoss_codes
+        assert "6C" in danfoss_codes
+        assert "0A" in danfoss_codes
+        assert "H" in danfoss_codes

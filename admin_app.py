@@ -40,6 +40,13 @@ db = ProductDB()
 vs = VectorStore()
 pipeline = IngestionPipeline(db, vs)
 
+# Auto-load seed spool data on startup (idempotent — safe to call every time)
+_seed_path = Path(__file__).parent / "data" / "spool_seed.json"
+if _seed_path.exists():
+    _seed_count = db.load_seed_spool_data(str(_seed_path))
+    if _seed_count > 0:
+        logger.info("Loaded %d seed spool type references on startup", _seed_count)
+
 # Known companies for the dropdown (Danfoss always first)
 KNOWN_COMPANIES = ["Danfoss", "Bosch Rexroth", "Parker", "ATOS"]
 
@@ -695,6 +702,28 @@ def import_spools_from_database(manufacturer):
     )
 
 
+def seed_standard_spools():
+    """Load or reload standard spool types from seed file."""
+    seed_path = str(Path(__file__).parent / "data" / "spool_seed.json")
+    if not Path(seed_path).exists():
+        return "Seed file not found at data/spool_seed.json", get_spool_type_table()
+    count = db.load_seed_spool_data(seed_path, force=True)
+    return f"Loaded {count} standard spool types from seed file.", get_spool_type_table()
+
+
+def get_reference_coverage_summary():
+    """Show which manufacturers/series have spool reference data."""
+    refs = db.get_spool_type_references()
+    if not refs:
+        return "No spool type references in database."
+    coverage: dict[str, int] = {}
+    for r in refs:
+        key = f"{r.get('manufacturer', '?')} ({r.get('series_prefix', '?')})"
+        coverage[key] = coverage.get(key, 0) + 1
+    parts = [f"{k}: {v} codes" for k, v in sorted(coverage.items())]
+    return "Reference coverage: " + ", ".join(parts)
+
+
 def _infer_series_from_model(model_code: str) -> str:
     """Infer series prefix from a single model code.
 
@@ -924,6 +953,11 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
                 "key variants (main runners) instead of generating all combinations."
             )
 
+            # Reference coverage summary
+            spool_coverage_label = gr.Markdown(
+                value=get_reference_coverage_summary(),
+            )
+
             with gr.Row():
                 spool_mfr_filter = gr.Dropdown(
                     label="Manufacturer Filter",
@@ -932,6 +966,14 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
                     allow_custom_value=True,
                 )
                 spool_refresh_btn = gr.Button("Refresh")
+                spool_seed_btn = gr.Button(
+                    "Seed Standard Spool Types",
+                    variant="secondary",
+                )
+
+            spool_seed_status = gr.Textbox(
+                label="Seed Status", interactive=False, visible=False,
+            )
 
             spool_ref_table = gr.Dataframe(
                 label="Known Spool Types",
@@ -942,6 +984,18 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
                 get_spool_type_table,
                 inputs=[spool_mfr_filter],
                 outputs=[spool_ref_table],
+            )
+
+            def _seed_and_refresh():
+                msg, table = seed_standard_spools()
+                coverage = get_reference_coverage_summary()
+                return msg, table, coverage, gr.update(visible=True)
+
+            spool_seed_btn.click(
+                _seed_and_refresh,
+                inputs=[],
+                outputs=[spool_seed_status, spool_ref_table,
+                         spool_coverage_label, spool_seed_status],
             )
 
             gr.Markdown("### Add Spool Type")

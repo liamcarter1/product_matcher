@@ -6,6 +6,7 @@ Thread-safety: All write operations are serialised through a threading.Lock.
 
 import sqlite3
 import json
+import logging
 import uuid
 import threading
 from pathlib import Path
@@ -17,6 +18,8 @@ from models import (
     ModelCodePattern, SCORE_WEIGHTS, CONFIDENCE_THRESHOLD,
     SPEC_FIELDS, NUMERICAL_FIELDS, EXACT_MATCH_FIELDS,
 )
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent.parent / "data" / "products.db"
 
@@ -820,6 +823,79 @@ class ProductDB:
                     (manufacturer.upper(),),
                 )
             self.conn.commit()
+
+    # ── Seed Data Loading ──────────────────────────────────────────────
+
+    def load_seed_spool_data(self, seed_path: str = None, force: bool = False) -> int:
+        """Load seed spool type references from a JSON file.
+
+        Designed to run on every app startup — idempotent by default.
+
+        Args:
+            seed_path: Path to spool_seed.json.  Falls back to
+                       ``data/spool_seed.json`` relative to project root.
+            force: If True, reload even if seed data already exists.
+
+        Returns:
+            Number of seed records inserted (0 if already seeded and not forced).
+        """
+        import json as _json
+        from pathlib import Path as _Path
+
+        if seed_path is None:
+            seed_path = str(_Path(__file__).parent.parent / "data" / "spool_seed.json")
+
+        if not _Path(seed_path).exists():
+            logger.warning("Seed file not found: %s", seed_path)
+            return 0
+
+        if not force:
+            # Check if seed data already loaded
+            with self.conn:
+                row = self.conn.execute(
+                    "SELECT COUNT(*) FROM spool_type_reference WHERE source = 'seed'"
+                ).fetchone()
+                if row and row[0] > 0:
+                    logger.debug("Seed data already loaded (%d rows), skipping", row[0])
+                    return 0
+
+        with open(seed_path, "r", encoding="utf-8") as f:
+            data = _json.load(f)
+
+        entries = data.get("seed_data", [])
+        if not entries:
+            return 0
+
+        # Prepare references for bulk insert
+        refs = []
+        for entry in entries:
+            refs.append({
+                "series_prefix": entry.get("series_prefix", ""),
+                "manufacturer": entry.get("manufacturer", ""),
+                "spool_code": entry.get("spool_code", ""),
+                "description": entry.get("description", ""),
+                "center_condition": entry.get("center_condition", ""),
+                "solenoid_a_function": entry.get("solenoid_a_function", ""),
+                "solenoid_b_function": entry.get("solenoid_b_function", ""),
+                "canonical_pattern": entry.get("canonical_pattern", ""),
+                "is_primary": 1 if entry.get("is_primary") else 0,
+                "source": "seed",
+                "source_document": seed_path,
+            })
+
+        count = self.bulk_insert_spool_type_references(refs)
+        logger.info("Loaded %d seed spool type references from %s", count, seed_path)
+        return count
+
+    def has_spool_references_for_series(
+        self, series_prefix: str, manufacturer: str
+    ) -> bool:
+        """Quick check whether any spool type references exist for a series/manufacturer.
+
+        Used by the reference-first pipeline to decide whether to skip vision.
+        """
+        refs = self.get_spool_type_references(series_prefix, manufacturer)
+        return len(refs) > 0
 
     # ── Spec Comparison ───────────────────────────────────────────────
 

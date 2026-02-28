@@ -1553,6 +1553,73 @@ def _merge_spool_results(
     return merged
 
 
+def _merge_spool_results_v2(
+    reference_spools: list[dict],
+    text_spools: list[dict],
+    vision_spools: list[dict],
+) -> dict[str, dict]:
+    """Merge spool results from three sources: reference > text > vision.
+
+    Reference data (from spool_type_reference table) is the authoritative
+    source and is never overwritten.  Text analysis adds codes not in
+    reference.  Vision results are lowest priority and tagged as unconfirmed.
+
+    Returns:
+        Dict mapping uppercase spool_code to merged spool dict.
+        Also includes leading-zero-stripped aliases.
+    """
+    merged: dict[str, dict] = {}
+
+    def _add_entry(code_raw: str, entry: dict, source_tag: str) -> None:
+        code = code_raw.strip().upper()
+        if not code:
+            return
+        if code not in merged:
+            new = dict(entry)
+            new.setdefault("source", source_tag)
+            merged[code] = new
+            stripped = code.lstrip("0")
+            if stripped and stripped != code:
+                merged[stripped] = dict(new)
+        else:
+            # Only fill empty fields — never overwrite higher-priority data
+            existing = merged[code]
+            for field in [
+                "center_condition", "solenoid_a_function",
+                "solenoid_b_function", "description",
+                "symbol_description", "canonical_pattern",
+            ]:
+                if not existing.get(field) and entry.get(field):
+                    existing[field] = entry[field]
+
+    # 1. Reference spools first (highest priority, authoritative)
+    for s in reference_spools:
+        _add_entry(s.get("spool_code", ""), s, "reference")
+
+    # 2. Text spools (medium priority — discovers new codes)
+    for s in text_spools:
+        _add_entry(s.get("spool_code", ""), s, "text")
+
+    # 3. Vision spools (lowest priority, flagged as unconfirmed)
+    for s in vision_spools:
+        _add_entry(s.get("spool_code", ""), s, "vision_unconfirmed")
+
+    ref_count = len({s.get("spool_code", "").strip().upper()
+                     for s in reference_spools if s.get("spool_code")})
+    text_count = len({s.get("spool_code", "").strip().upper()
+                      for s in text_spools if s.get("spool_code")})
+    vis_count = len({s.get("spool_code", "").strip().upper()
+                     for s in vision_spools if s.get("spool_code")})
+    unique_codes = len({s.get("spool_code", "").strip().upper()
+                        for s in merged.values() if s.get("spool_code")})
+    logger.info(
+        "Spool merge v2: %d reference + %d text + %d vision = %d unique codes "
+        "(%d with aliases)",
+        ref_count, text_count, vis_count, unique_codes, len(merged),
+    )
+    return merged
+
+
 def extract_spool_symbols_from_pdf(pdf_path: str, company: str) -> list[dict]:
     """Extract spool symbols from PDF pages using GPT-4o vision.
 
