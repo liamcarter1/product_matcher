@@ -1107,6 +1107,361 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
             )
 
 
+        # ── Teaching Mode Tab ──────────────────────────────────────────
+        with gr.Tab("Teaching Mode"):
+            gr.Markdown("### Teach the LLM by Example")
+            gr.Markdown(
+                "Upload a reference PDF you know well, classify each page, "
+                "review the LLM's extraction, correct it, and save as a teaching example. "
+                "Future extractions for this manufacturer will use your corrections as reference."
+            )
+
+            # ── Step 1: Upload reference PDF ──
+            gr.Markdown("#### Step 1: Upload Reference PDF")
+            with gr.Row():
+                teach_manufacturer = gr.Dropdown(
+                    label="Manufacturer", choices=KNOWN_COMPANIES,
+                    allow_custom_value=True,
+                )
+                teach_series = gr.Textbox(
+                    label="Series Prefix (optional)",
+                    placeholder="e.g. D1VW, 4WE6, DG4V",
+                    max_lines=1,
+                )
+            teach_pdf = gr.File(
+                label="Reference PDF", file_types=[".pdf"],
+            )
+            teach_load_btn = gr.Button("Load & Render Pages", variant="primary")
+            teach_load_status = gr.Textbox(label="Status", interactive=False)
+
+            # ── Step 2: Page gallery with classification ──
+            gr.Markdown("#### Step 2: Classify Pages")
+            gr.Markdown(
+                "Select the type for each page you want to teach from. "
+                "Pages marked 'Skip' will be ignored."
+            )
+            teach_gallery = gr.Gallery(
+                label="PDF Pages", columns=4, height="auto",
+                interactive=False,
+            )
+            teach_page_types = gr.Dataframe(
+                label="Page Classifications",
+                headers=["Page", "Type"],
+                datatype=["number", "str"],
+                interactive=True,
+            )
+            teach_extract_btn = gr.Button("Extract & Review", variant="primary")
+            teach_extract_status = gr.Textbox(label="Extraction Status", interactive=False)
+
+            # ── Step 3: Review & correct ──
+            gr.Markdown("#### Step 3: Review & Correct Extraction")
+            teach_results = gr.Dataframe(
+                label="Extracted Data (edit to correct)",
+                interactive=True,
+            )
+            teach_annotation = gr.Textbox(
+                label="Your Annotation (explain what's on this page and how to read it)",
+                placeholder=(
+                    "e.g. The spool options are listed in 8pt text below the "
+                    "hydraulic symbol diagram. There are 16 options across two "
+                    "columns. Position 5 in the ordering code is the spool type."
+                ),
+                lines=3,
+            )
+
+            # ── Step 4: Save ──
+            teach_save_btn = gr.Button("Save as Teaching Example(s)", variant="primary")
+            teach_save_status = gr.Textbox(label="Save Status", interactive=False)
+
+            # State for rendered pages
+            teach_rendered_state = gr.State([])
+            teach_page_data_state = gr.State({})
+
+            # ── Handlers ──
+
+            def load_reference_pdf(pdf_file, manufacturer, series):
+                """Render all pages from the reference PDF."""
+                if pdf_file is None:
+                    return "Please upload a PDF file.", [], [], []
+                if not manufacturer:
+                    return "Please select a manufacturer.", [], [], []
+
+                from tools.agents.base import render_pdf_pages
+                import tempfile
+
+                pdf_path = pdf_file.name if hasattr(pdf_file, 'name') else str(pdf_file)
+
+                try:
+                    import fitz
+                    doc = fitz.open(pdf_path)
+                    total_pages = len(doc)
+                    doc.close()
+                except Exception:
+                    total_pages = 20
+
+                page_indices = list(range(total_pages))
+                rendered = render_pdf_pages(pdf_path, page_indices, dpi=150)
+
+                if not rendered:
+                    return "No pages could be rendered from this PDF.", [], [], []
+
+                # Write temp images for gallery display
+                import base64 as b64_mod
+                gallery_images = []
+                for page_idx, img_b64 in rendered:
+                    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                    tmp.write(b64_mod.b64decode(img_b64))
+                    tmp.close()
+                    gallery_images.append((tmp.name, f"Page {page_idx + 1}"))
+
+                # Build classification table
+                page_types_data = [
+                    [page_idx + 1, "skip"]
+                    for page_idx, _ in rendered
+                ]
+
+                status = f"Rendered {len(rendered)} pages from {os.path.basename(pdf_path)}."
+                return status, gallery_images, page_types_data, rendered
+
+            def run_teaching_extraction(
+                rendered_pages, page_classifications, manufacturer, series, pdf_file
+            ):
+                """Run extraction on classified pages."""
+                if not rendered_pages:
+                    return "No pages loaded. Load a PDF first.", []
+
+                if not isinstance(page_classifications, list) or not page_classifications:
+                    return "No page classifications. Classify pages first.", []
+
+                # Parse classifications
+                classified = {}
+                for row in page_classifications:
+                    if len(row) >= 2:
+                        page_num = int(row[0])
+                        page_type = str(row[1]).strip().lower()
+                        if page_type and page_type != "skip":
+                            classified[page_num] = page_type
+
+                if not classified:
+                    return "No pages classified (all marked as 'skip').", []
+
+                # Group pages by type and run appropriate extraction
+                results_rows = []
+                page_data = {}
+
+                for page_num, page_type in sorted(classified.items()):
+                    # Find the rendered image for this page
+                    matching = [
+                        (idx, b64) for idx, b64 in rendered_pages
+                        if idx + 1 == page_num
+                    ]
+                    if not matching:
+                        continue
+
+                    page_idx, img_b64 = matching[0]
+                    page_data[page_num] = {
+                        "page_type": page_type,
+                        "page_idx": page_idx,
+                        "image_b64": img_b64,
+                        "extraction": None,
+                    }
+
+                    if page_type in ("ordering_code_table", "spool_diagram", "spool_table"):
+                        results_rows.append([
+                            page_num, page_type, "(ready for extraction)", ""
+                        ])
+                    else:
+                        results_rows.append([
+                            page_num, page_type, "(classified)", ""
+                        ])
+
+                status = (
+                    f"Classified {len(classified)} page(s): "
+                    + ", ".join(f"p{p}={t}" for p, t in sorted(classified.items()))
+                    + "\n\nEdit the annotation below, then click 'Save as Teaching Example(s)'."
+                )
+                return status, results_rows, page_data
+
+            def save_teaching_examples(
+                rendered_pages, page_data, page_classifications,
+                annotation, manufacturer, series, pdf_file,
+            ):
+                """Save classified pages as teaching examples."""
+                if not rendered_pages or not page_data:
+                    return "No data to save. Load and classify a PDF first."
+
+                if not manufacturer:
+                    return "Manufacturer is required."
+
+                import json as _json
+                from tools.agents.base import save_teaching_image
+
+                pdf_name = ""
+                if pdf_file is not None:
+                    pdf_name = os.path.basename(
+                        pdf_file.name if hasattr(pdf_file, 'name') else str(pdf_file)
+                    )
+
+                saved_count = 0
+                for page_num, data in page_data.items():
+                    page_type = data.get("page_type", "")
+                    if not page_type or page_type == "skip":
+                        continue
+
+                    img_b64 = data.get("image_b64", "")
+                    if not img_b64:
+                        continue
+
+                    # Save image to disk
+                    filename = f"{series or 'ref'}_page{page_num}.png"
+                    image_path = save_teaching_image(img_b64, manufacturer, filename)
+
+                    # Build correct_output from any extraction data
+                    correct_output = _json.dumps(
+                        data.get("extraction") or {"note": "Admin to provide correct extraction"},
+                        indent=2,
+                    )
+
+                    try:
+                        db.insert_extraction_example(
+                            manufacturer=manufacturer,
+                            page_type=page_type,
+                            series_prefix=series or "",
+                            source_pdf=pdf_name,
+                            page_number=page_num,
+                            image_path=image_path,
+                            annotation=annotation or "",
+                            correct_output=correct_output,
+                        )
+                        saved_count += 1
+                    except Exception as e:
+                        logger.warning("Failed to save example for page %d: %s", page_num, e)
+
+                if saved_count:
+                    return (
+                        f"Saved {saved_count} teaching example(s) for "
+                        f"{manufacturer} {series or ''}. "
+                        f"These will be used in future extractions."
+                    )
+                return "No examples were saved. Ensure pages are classified."
+
+            def get_teaching_examples_table():
+                """Get all teaching examples as a displayable table."""
+                examples = db.get_extraction_examples(active_only=False)
+                if not examples:
+                    return []
+                rows = []
+                for ex in examples:
+                    rows.append([
+                        ex.get("id", ""),
+                        ex.get("manufacturer", ""),
+                        ex.get("series_prefix", ""),
+                        ex.get("page_type", ""),
+                        ex.get("source_pdf", "")[:30],
+                        ex.get("annotation", "")[:50],
+                        ex.get("times_used", 0),
+                        "Yes" if ex.get("is_active") else "No",
+                    ])
+                return rows
+
+            def delete_teaching_example(example_id):
+                """Delete a teaching example by ID prefix."""
+                if not example_id or len(example_id.strip()) < 3:
+                    return "Enter at least 3 characters of the example ID.", get_teaching_examples_table()
+                example_id = example_id.strip()
+                examples = db.get_extraction_examples(active_only=False)
+                matched = [e for e in examples if e["id"].startswith(example_id)]
+                if not matched:
+                    return f"No example found with ID starting with '{example_id}'.", get_teaching_examples_table()
+                db.delete_extraction_example(matched[0]["id"])
+                return f"Deleted teaching example {matched[0]['id']}.", get_teaching_examples_table()
+
+            def toggle_teaching_active(example_id, set_active):
+                """Toggle active state of a teaching example."""
+                if not example_id or len(example_id.strip()) < 3:
+                    return "Enter at least 3 characters of the example ID.", get_teaching_examples_table()
+                example_id = example_id.strip()
+                examples = db.get_extraction_examples(active_only=False)
+                matched = [e for e in examples if e["id"].startswith(example_id)]
+                if not matched:
+                    return f"No example found with ID starting with '{example_id}'.", get_teaching_examples_table()
+                new_active = 1 if set_active == "Yes" else 0
+                db.update_extraction_example(matched[0]["id"], is_active=new_active)
+                state_str = "active" if new_active else "inactive"
+                return f"Set example {matched[0]['id']} to {state_str}.", get_teaching_examples_table()
+
+            # ── Wire up handlers ──
+
+            teach_load_btn.click(
+                load_reference_pdf,
+                inputs=[teach_pdf, teach_manufacturer, teach_series],
+                outputs=[teach_load_status, teach_gallery, teach_page_types,
+                         teach_rendered_state],
+            )
+
+            teach_extract_btn.click(
+                run_teaching_extraction,
+                inputs=[teach_rendered_state, teach_page_types,
+                        teach_manufacturer, teach_series, teach_pdf],
+                outputs=[teach_extract_status, teach_results, teach_page_data_state],
+            )
+
+            teach_save_btn.click(
+                save_teaching_examples,
+                inputs=[teach_rendered_state, teach_page_data_state,
+                        teach_page_types, teach_annotation,
+                        teach_manufacturer, teach_series, teach_pdf],
+                outputs=[teach_save_status],
+            )
+
+            # ── Example Management ──
+            gr.Markdown("---")
+            gr.Markdown("### Saved Teaching Examples")
+            teach_examples_table = gr.Dataframe(
+                label="Teaching Examples",
+                headers=["ID", "Manufacturer", "Series", "Type", "Source PDF",
+                         "Annotation", "Uses", "Active"],
+                value=get_teaching_examples_table,
+                interactive=False,
+            )
+            teach_refresh_btn = gr.Button("Refresh")
+            teach_refresh_btn.click(
+                lambda: get_teaching_examples_table(),
+                outputs=[teach_examples_table],
+            )
+
+            with gr.Row():
+                teach_del_id = gr.Textbox(
+                    label="Example ID (prefix)", placeholder="e.g. a1b2",
+                    max_lines=1,
+                )
+                teach_del_btn = gr.Button("Delete Example", variant="stop")
+                teach_del_status = gr.Textbox(label="Status")
+
+            teach_del_btn.click(
+                delete_teaching_example,
+                inputs=[teach_del_id],
+                outputs=[teach_del_status, teach_examples_table],
+            )
+
+            with gr.Row():
+                teach_toggle_id = gr.Textbox(
+                    label="Example ID (prefix)", placeholder="e.g. a1b2",
+                    max_lines=1,
+                )
+                teach_toggle_active = gr.Dropdown(
+                    label="Set Active", choices=["Yes", "No"], value="Yes",
+                )
+                teach_toggle_btn = gr.Button("Toggle Active")
+                teach_toggle_status = gr.Textbox(label="Status")
+
+            teach_toggle_btn.click(
+                toggle_teaching_active,
+                inputs=[teach_toggle_id, teach_toggle_active],
+                outputs=[teach_toggle_status, teach_examples_table],
+            )
+
+
 if __name__ == "__main__":
     launch_kwargs = {
         "server_name": os.getenv("ADMIN_HOST", "127.0.0.1"),

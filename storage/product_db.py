@@ -161,6 +161,28 @@ class ProductDB:
 
             CREATE INDEX IF NOT EXISTS idx_spool_ref_series
                 ON spool_type_reference(series_prefix, manufacturer);
+
+            CREATE TABLE IF NOT EXISTS extraction_examples (
+                id TEXT PRIMARY KEY,
+                manufacturer TEXT NOT NULL,
+                series_prefix TEXT DEFAULT '',
+                page_type TEXT NOT NULL,
+                source_pdf TEXT DEFAULT '',
+                page_number INTEGER DEFAULT 0,
+                image_path TEXT DEFAULT '',
+                annotation TEXT DEFAULT '',
+                correct_output TEXT DEFAULT '{}',
+                is_active INTEGER DEFAULT 1,
+                times_used INTEGER DEFAULT 0,
+                last_used_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(manufacturer, source_pdf, page_number, page_type)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_example_lookup
+                ON extraction_examples(manufacturer, page_type, is_active);
+            CREATE INDEX IF NOT EXISTS idx_example_series
+                ON extraction_examples(manufacturer, series_prefix, page_type);
         """)
         self.conn.commit()
 
@@ -822,6 +844,111 @@ class ProductDB:
                        WHERE UPPER(manufacturer) = ?""",
                     (manufacturer.upper(),),
                 )
+            self.conn.commit()
+
+    # ── Extraction Examples (Teaching Mode) ─────────────────────────────
+
+    def insert_extraction_example(
+        self,
+        manufacturer: str,
+        page_type: str,
+        *,
+        series_prefix: str = "",
+        source_pdf: str = "",
+        page_number: int = 0,
+        image_path: str = "",
+        annotation: str = "",
+        correct_output: str = "{}",
+    ) -> str:
+        """Insert a teaching example. Returns the generated ID."""
+        example_id = str(uuid.uuid4())[:8]
+        with self._lock:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO extraction_examples
+                   (id, manufacturer, series_prefix, page_type, source_pdf,
+                    page_number, image_path, annotation, correct_output)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (example_id, manufacturer, series_prefix, page_type,
+                 source_pdf, page_number, image_path, annotation, correct_output),
+            )
+            self.conn.commit()
+        return example_id
+
+    def get_extraction_examples(
+        self,
+        manufacturer: str = "",
+        page_type: str = "",
+        series_prefix: str = "",
+        active_only: bool = True,
+    ) -> list[dict]:
+        """Query extraction examples with optional filters."""
+        sql = "SELECT * FROM extraction_examples WHERE 1=1"
+        params: list = []
+        if manufacturer:
+            sql += " AND UPPER(manufacturer) = ?"
+            params.append(manufacturer.upper())
+        if page_type:
+            sql += " AND page_type = ?"
+            params.append(page_type)
+        if series_prefix:
+            sql += " AND UPPER(series_prefix) = ?"
+            params.append(series_prefix.upper())
+        if active_only:
+            sql += " AND is_active = 1"
+        sql += " ORDER BY times_used DESC, created_at DESC"
+
+        rows = self.conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_extraction_example(
+        self,
+        example_id: str,
+        *,
+        annotation: str | None = None,
+        correct_output: str | None = None,
+        is_active: int | None = None,
+    ):
+        """Update fields on an existing extraction example."""
+        updates = []
+        params: list = []
+        if annotation is not None:
+            updates.append("annotation = ?")
+            params.append(annotation)
+        if correct_output is not None:
+            updates.append("correct_output = ?")
+            params.append(correct_output)
+        if is_active is not None:
+            updates.append("is_active = ?")
+            params.append(is_active)
+        if not updates:
+            return
+        params.append(example_id)
+        with self._lock:
+            self.conn.execute(
+                f"UPDATE extraction_examples SET {', '.join(updates)} WHERE id = ?",
+                params,
+            )
+            self.conn.commit()
+
+    def delete_extraction_example(self, example_id: str) -> bool:
+        """Delete an extraction example. Returns True if a row was deleted."""
+        with self._lock:
+            cursor = self.conn.execute(
+                "DELETE FROM extraction_examples WHERE id = ?", (example_id,)
+            )
+            self.conn.commit()
+            return cursor.rowcount > 0
+
+    def increment_example_usage(self, example_id: str):
+        """Bump times_used and last_used_at for an example."""
+        with self._lock:
+            self.conn.execute(
+                """UPDATE extraction_examples
+                   SET times_used = times_used + 1,
+                       last_used_at = CURRENT_TIMESTAMP
+                   WHERE id = ?""",
+                (example_id,),
+            )
             self.conn.commit()
 
     # ── Seed Data Loading ──────────────────────────────────────────────

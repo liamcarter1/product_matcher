@@ -213,10 +213,23 @@ class IngestionPipeline:
             logger.info("Reference-first: %d spool refs from DB for %s",
                         len(reference_spools), metadata.company)
 
+        # Query teaching examples for spool extraction
+        from tools.agents.teaching import get_relevant_examples
+        spool_teaching_examples = get_relevant_examples(
+            self.db, metadata.company, "spool_diagram",
+            series_prefix=inferred_series or "",
+            max_examples=2,
+        )
+        if spool_teaching_examples:
+            print(f"[DEBUG] Using {len(spool_teaching_examples)} teaching example(s) for spool extraction")
+
         # Step 5b: Text-based spool analysis (always runs — discovers new codes)
         if full_text:
             try:
-                text_spools = analyze_spool_functions(full_text, metadata.company)
+                text_spools = analyze_spool_functions(
+                    full_text, metadata.company,
+                    few_shot_examples=spool_teaching_examples or None,
+                )
                 if text_spools:
                     print(f"Spool text analysis: found {len(text_spools)} spool types")
             except Exception as e:
@@ -235,6 +248,7 @@ class IngestionPipeline:
                     page_classifications=page_classifications,
                     known_spool_codes=known_spools_db if known_spools_db else None,
                     retry_on_low_count=True,
+                    few_shot_examples=spool_teaching_examples or None,
                 )
                 if vision_spools:
                     # Flag all vision results as unconfirmed
@@ -278,6 +292,15 @@ class IngestionPipeline:
                 print(f"[DEBUG] Injecting {len(discovered_spool_codes)} discovered spool codes "
                       f"into ordering code extraction")
 
+            # Query teaching examples for ordering code extraction
+            ordering_teaching_examples = get_relevant_examples(
+                self.db, metadata.company, "ordering_code_table",
+                series_prefix=inferred_series or "",
+                max_examples=2,
+            )
+            if ordering_teaching_examples:
+                print(f"[DEBUG] Using {len(ordering_teaching_examples)} teaching example(s) for ordering code extraction")
+
             # Choose extraction method: vision-first for graphics-heavy, text for normal
             ordering_defs = []
             if graphics_heavy:
@@ -285,6 +308,7 @@ class IngestionPipeline:
                 ordering_defs = extract_ordering_code_from_images(
                     pdf_path, metadata.company, metadata.category or "",
                     known_spool_codes=all_known_spools if all_known_spools else None,
+                    few_shot_examples=ordering_teaching_examples or None,
                 )
                 # If vision fails, fall back to text (may still yield partial results)
                 if not ordering_defs and full_text:
@@ -293,11 +317,13 @@ class IngestionPipeline:
                     ordering_defs = extract_ordering_code_with_llm(
                         full_text, metadata.company, metadata.category or "",
                         known_spool_codes=all_known_spools if all_known_spools else None,
+                        few_shot_examples=ordering_teaching_examples or None,
                     )
             elif full_text:
                 ordering_defs = extract_ordering_code_with_llm(
                     full_text, metadata.company, metadata.category or "",
                     known_spool_codes=all_known_spools if all_known_spools else None,
+                    few_shot_examples=ordering_teaching_examples or None,
                 )
                 # Vision retry: if text extraction found NO ordering codes and
                 # the PDF has enough pages, try vision as a fallback. This catches
@@ -309,6 +335,7 @@ class IngestionPipeline:
                     ordering_defs = extract_ordering_code_from_images(
                         pdf_path, metadata.company, metadata.category or "",
                         known_spool_codes=all_known_spools if all_known_spools else None,
+                        few_shot_examples=ordering_teaching_examples or None,
                     )
                     if ordering_defs:
                         self._last_extraction_method = "vision (text retry)"

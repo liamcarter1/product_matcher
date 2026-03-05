@@ -19,6 +19,45 @@ except ImportError:
     HAS_PYMUPDF = False
 
 
+# ── Teaching image storage ────────────────────────────────────────────────
+
+_TEACHING_IMAGES_DIR = Path(__file__).parent.parent.parent / "data" / "teaching_images"
+
+
+def _sanitize_slug(name: str) -> str:
+    """Convert a manufacturer name to a filesystem-safe directory name."""
+    import re
+    return re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_')
+
+
+def save_teaching_image(
+    image_b64: str,
+    manufacturer: str,
+    filename: str,
+) -> str:
+    """Write a base64-encoded PNG to data/teaching_images/{manufacturer_slug}/.
+
+    Returns the relative path from data/teaching_images/ (for DB storage).
+    """
+    slug = _sanitize_slug(manufacturer)
+    directory = _TEACHING_IMAGES_DIR / slug
+    directory.mkdir(parents=True, exist_ok=True)
+
+    out_path = directory / filename
+    out_path.write_bytes(base64.b64decode(image_b64))
+
+    return f"{slug}/{filename}"
+
+
+def load_teaching_image(relative_path: str) -> str | None:
+    """Read a teaching image back as base64. Returns None if file is missing."""
+    full_path = _TEACHING_IMAGES_DIR / relative_path
+    if not full_path.exists():
+        logger.warning("Teaching image not found: %s", full_path)
+        return None
+    return base64.b64encode(full_path.read_bytes()).decode("utf-8")
+
+
 # ── Text chunking ────────────────────────────────────────────────────────
 
 def chunk_text(

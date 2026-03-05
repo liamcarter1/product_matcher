@@ -138,6 +138,7 @@ def extract_ordering_code_text(
     company: str,
     category: str = "",
     known_spool_codes: list[str] | None = None,
+    few_shot_examples: list[dict] | None = None,
 ) -> list[OrderingCodeDefinition]:
     """Extract ordering code breakdowns from document text.
 
@@ -156,10 +157,16 @@ def extract_ordering_code_text(
 
     selected_text = _select_ordering_code_text(text)
 
+    # Build few-shot section from teaching examples
+    few_shot_section = ""
+    if few_shot_examples:
+        from tools.agents.teaching import build_few_shot_section
+        few_shot_section = build_few_shot_section(few_shot_examples, "ordering_code_table")
+
     user_prompt = _USER_PROMPT_TEMPLATE.format(
         company=company,
         valid_fields=", ".join(sorted(_VALID_SPEC_FIELDS)),
-        spool_reference_section=spool_ref,
+        spool_reference_section=spool_ref + few_shot_section,
         text=selected_text,
     )
 
@@ -184,6 +191,7 @@ def extract_ordering_code_vision(
     known_spool_codes: list[str] | None = None,
     target_pages: list[int] | None = None,
     dpi: int = 200,
+    few_shot_examples: list[dict] | None = None,
 ) -> list[OrderingCodeDefinition]:
     """Extract ordering code breakdowns from PDF page images.
 
@@ -212,8 +220,14 @@ def extract_ordering_code_vision(
         spool_reference_section=spool_ref,
     )
 
-    # Build multi-image content
-    content = [build_text_block(prompt)]
+    # Build multi-image content (few-shot examples prepended if available)
+    content = []
+    if few_shot_examples:
+        from tools.agents.teaching import build_few_shot_vision_content
+        content.extend(build_few_shot_vision_content(
+            few_shot_examples, "ordering_code_table"
+        ))
+    content.append(build_text_block(prompt))
     for _, img_b64 in rendered:
         content.append(build_image_block(img_b64, "image/png"))
 

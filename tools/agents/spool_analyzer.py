@@ -63,7 +63,7 @@ DOCUMENT TEXT:
 {text}"""
 
 
-def analyze_spool_text(text: str, company: str) -> list[dict]:
+def analyze_spool_text(text: str, company: str, few_shot_examples: list[dict] | None = None) -> list[dict]:
     """Perform deep LLM analysis of spool/valve function symbols from text.
 
     Returns a list of dicts, each with:
@@ -74,7 +74,13 @@ def analyze_spool_text(text: str, company: str) -> list[dict]:
     if len(text) > max_chars:
         text = text[:max_chars]
 
-    user_prompt = _TEXT_USER_PROMPT.format(company=company, text=text)
+    # Inject few-shot examples if available
+    few_shot_section = ""
+    if few_shot_examples:
+        from tools.agents.teaching import build_few_shot_section
+        few_shot_section = build_few_shot_section(few_shot_examples, "spool_diagram")
+
+    user_prompt = few_shot_section + _TEXT_USER_PROMPT.format(company=company, text=text)
 
     try:
         data = call_llm_json(
@@ -182,6 +188,7 @@ def analyze_spool_vision(
     known_spool_codes: list[str] | None = None,
     retry_on_low_count: bool = True,
     min_expected_spools: int = 5,
+    few_shot_examples: list[dict] | None = None,
 ) -> list[dict]:
     """Extract spool symbols from PDF using batched multi-page vision.
 
@@ -257,8 +264,14 @@ def analyze_spool_vision(
             known_spool_codes_section=known_section,
         )
 
-        # Build multi-image content
-        content = [build_text_block(prompt)]
+        # Build multi-image content (few-shot examples on first batch only)
+        content = []
+        if batch_idx == 0 and few_shot_examples:
+            from tools.agents.teaching import build_few_shot_vision_content
+            content.extend(build_few_shot_vision_content(
+                few_shot_examples, "spool_diagram"
+            ))
+        content.append(build_text_block(prompt))
         for _, img_b64 in batch:
             content.append(build_image_block(img_b64, "image/png"))
 
