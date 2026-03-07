@@ -1879,8 +1879,23 @@ def _parse_ordering_code_response(
             )
             if definition.series and definition.segments:
                 definitions.append(definition)
+            else:
+                print(f"[WARNING] Ordering code definition DROPPED: "
+                      f"series='{definition.series}', "
+                      f"segments={len(definition.segments)}, "
+                      f"product_name='{definition.product_name}', "
+                      f"template='{definition.code_template}'")
+                # If series is empty but we have segments, try to salvage
+                if not definition.series and definition.segments:
+                    # Try to infer series from the code_template or product_name
+                    inferred = definition.product_name.split()[0] if definition.product_name else "UNKNOWN"
+                    print(f"[WARNING] Salvaging definition with inferred series: '{inferred}'")
+                    definition.series = inferred
+                    definitions.append(definition)
         except Exception as e:
-            print(f"Error parsing ordering code definition: {e}")
+            print(f"[ERROR] Error parsing ordering code definition: {e}")
+            import traceback
+            traceback.print_exc()
             continue
 
     return definitions

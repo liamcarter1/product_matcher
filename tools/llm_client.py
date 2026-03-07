@@ -27,9 +27,9 @@ TIER_LOW = "low"     # Fast/cheap (query parsing, classification)
 
 # Anthropic model mapping
 _ANTHROPIC_MODELS = {
-    TIER_HIGH: "claude-opus-4-20250514",
+    TIER_HIGH: "claude-opus-4-0",
     TIER_MID: "claude-sonnet-4-20250514",
-    TIER_LOW: "claude-haiku-4-20250514",
+    TIER_LOW: "claude-haiku-4-5-20251001",
 }
 
 # OpenAI model mapping (fallback)
@@ -41,9 +41,9 @@ _OPENAI_MODELS = {
 
 # Vision model mapping (for image-heavy calls)
 _ANTHROPIC_VISION = {
-    TIER_HIGH: "claude-opus-4-20250514",
+    TIER_HIGH: "claude-opus-4-0",
     TIER_MID: "claude-sonnet-4-20250514",
-    TIER_LOW: "claude-haiku-4-20250514",
+    TIER_LOW: "claude-haiku-4-5-20251001",
 }
 _OPENAI_VISION = {
     TIER_HIGH: "gpt-4o",
@@ -360,14 +360,27 @@ def _parse_json_response(raw: str, model: str, max_tokens: int) -> dict | list:
     """Parse a raw LLM response as JSON, with fix-up retry on failure."""
     text = _strip_markdown_fences(raw)
 
+    # Try common trailing-content fixes before expensive LLM fix-up
     try:
         return json.loads(text)
-    except json.JSONDecodeError:
-        logger.warning("JSON parse failed from %s, attempting fix-up", model)
+    except json.JSONDecodeError as first_err:
+        # Attempt 1: truncated response — try closing open braces/brackets
+        repaired = _try_repair_truncated_json(text)
+        if repaired is not None:
+            logger.info("JSON repaired via bracket-closing (avoided LLM fix-up)")
+            return repaired
+
+        # Attempt 2: LLM fix-up — send the FULL response (not truncated)
+        logger.warning(
+            "JSON parse failed from %s (len=%d, error=%s), attempting LLM fix-up",
+            model, len(raw), first_err,
+        )
+        print(f"[WARNING] JSON parse failed (len={len(raw)}): {first_err}")
+        # Send up to 60000 chars to the fix-up LLM (well within context window)
         fix_prompt = (
             "The following text should be valid JSON but has syntax errors. "
             "Fix it and return ONLY valid JSON, nothing else:\n\n"
-            + raw[:8000]
+            + raw[:60000]
         )
         fixed_raw = _call_anthropic(
             model,
@@ -377,3 +390,38 @@ def _parse_json_response(raw: str, model: str, max_tokens: int) -> dict | list:
         )
         fixed = _strip_markdown_fences(fixed_raw)
         return json.loads(fixed)
+
+
+def _try_repair_truncated_json(text: str) -> dict | list | None:
+    """Try to repair JSON truncated by max_tokens by closing open structures.
+
+    Returns the parsed object if successful, None otherwise.
+    """
+    # Remove any trailing partial string/key that got cut mid-value
+    import re
+    # Strip trailing incomplete key-value pair after last comma
+    cleaned = re.sub(r',\s*"[^"]*$', '', text.rstrip())
+    # Strip trailing incomplete value after colon
+    cleaned = re.sub(r':\s*"[^"]*$', ': ""', cleaned)
+    cleaned = re.sub(r':\s*\d+$', ': 0', cleaned)
+
+    # Count open/close braces and brackets
+    open_braces = cleaned.count('{') - cleaned.count('}')
+    open_brackets = cleaned.count('[') - cleaned.count(']')
+
+    if open_braces < 0 or open_brackets < 0:
+        return None  # More closes than opens — can't repair
+
+    if open_braces == 0 and open_brackets == 0:
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            return None
+
+    # Close structures in reverse order
+    # Heuristic: close brackets then braces (arrays inside objects)
+    suffix = ']' * open_brackets + '}' * open_braces
+    try:
+        return json.loads(cleaned + suffix)
+    except json.JSONDecodeError:
+        return None

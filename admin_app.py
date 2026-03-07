@@ -310,16 +310,26 @@ def process_upload(files, company, doc_type, category, pending_state):
             diag_lines.append(f"Text spool analysis: {diag['text_spools_found']} spool types")
         if diag.get("text_spool_codes"):
             diag_lines.append(f"  codes: {diag['text_spool_codes']}")
+        if diag.get("text_spool_error"):
+            diag_lines.append(f"  ERROR: {diag['text_spool_error']}")
         if diag.get("vision_spools_found") is not None:
             diag_lines.append(f"Vision spool extraction: {diag['vision_spools_found']} spool types")
         if diag.get("vision_spool_codes"):
             diag_lines.append(f"  codes: {diag['vision_spool_codes']}")
+        if diag.get("vision_spool_error"):
+            diag_lines.append(f"  ERROR: {diag['vision_spool_error']}")
         if diag.get("merged_spool_count") is not None:
             diag_lines.append(f"Merged spool lookup: {diag['merged_spool_count']} entries")
+        if diag.get("ordering_code_tables") is not None:
+            diag_lines.append(f"Ordering code tables found: {diag['ordering_code_tables']}")
+        if diag.get("ordering_code_error"):
+            diag_lines.append(f"  ERROR: {diag['ordering_code_error']}")
         if diag.get("ordering_segments"):
             diag_lines.append(f"Ordering code segments: {diag['ordering_segments']}")
         if diag.get("spool_segment_options") is not None:
             diag_lines.append(f"Spool segment options in ordering code: {diag['spool_segment_options']}")
+        if diag.get("spool_segment_codes"):
+            diag_lines.append(f"  spool codes: {diag['spool_segment_codes']}")
     diag_info = ""
     if diag_lines:
         diag_info = "\nExtraction diagnostics:\n" + "\n".join(f"  {l}" for l in diag_lines) + "\n"

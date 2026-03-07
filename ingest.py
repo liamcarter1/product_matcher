@@ -385,6 +385,7 @@ class IngestionPipeline:
 
             # Capture ordering code diagnostics for UI display
             if ordering_defs:
+                self._last_extraction_diagnostics["ordering_code_tables"] = len(ordering_defs)
                 for defn in ordering_defs:
                     seg_summary = []
                     for seg in defn.segments:
@@ -397,6 +398,11 @@ class IngestionPipeline:
                             self._last_extraction_diagnostics["spool_segment_options"] = len(seg.options)
                             self._last_extraction_diagnostics["spool_segment_codes"] = spool_codes_in_oc
                     self._last_extraction_diagnostics["ordering_segments"] = " | ".join(seg_summary)
+            else:
+                self._last_extraction_diagnostics["ordering_code_tables"] = 0
+                self._last_extraction_diagnostics["ordering_code_error"] = (
+                    "No ordering code tables extracted (both vision and text paths returned empty)"
+                )
 
             # Step 6a: Augment spool segments with discovered spool codes
             # GPT-4o often only finds 1 spool option from the ordering code diagram
