@@ -302,11 +302,34 @@ def process_upload(files, company, doc_type, category, pending_state):
     extraction_method = getattr(pipeline, "_last_extraction_method", "text")
     method_tag = f"[{extraction_method}]" if extraction_method != "text" else ""
 
+    # Extraction diagnostics for debugging
+    diag_lines = []
+    diag = getattr(pipeline, "_last_extraction_diagnostics", {})
+    if diag:
+        if diag.get("text_spools_found") is not None:
+            diag_lines.append(f"Text spool analysis: {diag['text_spools_found']} spool types")
+        if diag.get("text_spool_codes"):
+            diag_lines.append(f"  codes: {diag['text_spool_codes']}")
+        if diag.get("vision_spools_found") is not None:
+            diag_lines.append(f"Vision spool extraction: {diag['vision_spools_found']} spool types")
+        if diag.get("vision_spool_codes"):
+            diag_lines.append(f"  codes: {diag['vision_spool_codes']}")
+        if diag.get("merged_spool_count") is not None:
+            diag_lines.append(f"Merged spool lookup: {diag['merged_spool_count']} entries")
+        if diag.get("ordering_segments"):
+            diag_lines.append(f"Ordering code segments: {diag['ordering_segments']}")
+        if diag.get("spool_segment_options") is not None:
+            diag_lines.append(f"Spool segment options in ordering code: {diag['spool_segment_options']}")
+    diag_info = ""
+    if diag_lines:
+        diag_info = "\nExtraction diagnostics:\n" + "\n".join(f"  {l}" for l in diag_lines) + "\n"
+
     status = (
         f"Extracted {len(all_extracted)} products from {len(file_paths)} file(s). "
         f"Also indexed {all_chunk_counts} text chunks.\n"
         f"Sources: {', '.join(source_details)}.{' ' + method_tag if method_tag else ''}\n"
         f"{dynamic_col_info}"
+        f"{diag_info}"
         f"{gapfill_info}\n"
         f"File results:\n" + "\n".join(file_summaries) + "\n\n"
         f"Review the products below and click 'Confirm & Index' to add them to the database."

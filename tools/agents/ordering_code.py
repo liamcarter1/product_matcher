@@ -175,12 +175,31 @@ def extract_ordering_code_text(
             TIER_HIGH,
             _SYSTEM_PROMPT,
             user_prompt,
+            max_tokens=16384,
         )
         raw_codes = data.get("ordering_codes", [])
         logger.info("Ordering code extraction: %d raw tables found", len(raw_codes))
+
+        # Debug: show what the LLM returned for each ordering code table
+        for i, rc in enumerate(raw_codes):
+            series = rc.get("series", "?")
+            segments = rc.get("segments", [])
+            print(f"[DEBUG] Ordering code table {i+1}: series={series}, "
+                  f"{len(segments)} segments")
+            for seg in segments:
+                seg_name = seg.get("segment_name", "?")
+                options = seg.get("options", [])
+                is_fixed = seg.get("is_fixed", True)
+                codes = [o.get("code", "") for o in options]
+                print(f"  [DEBUG]   pos={seg.get('position')}: {seg_name} "
+                      f"({'fixed' if is_fixed else 'VARIABLE'}) "
+                      f"{len(options)} options: {codes[:20]}"
+                      f"{'...' if len(codes) > 20 else ''}")
+
         return _parse_ordering_code_response(raw_codes, company, category)
     except Exception as e:
         logger.error("Ordering code text extraction error: %s", e)
+        print(f"[ERROR] Ordering code text extraction failed: {e}")
         return []
 
 
@@ -237,11 +256,29 @@ def extract_ordering_code_vision(
             _SYSTEM_PROMPT,
             content,
             vision=True,
-            max_tokens=8192,
+            max_tokens=16384,
         )
         raw_codes = data.get("ordering_codes", [])
         logger.info("Ordering code vision extraction: %d raw tables found", len(raw_codes))
+
+        # Debug: show what the LLM returned for each ordering code table
+        for i, rc in enumerate(raw_codes):
+            series = rc.get("series", "?")
+            segments = rc.get("segments", [])
+            print(f"[DEBUG] Ordering code table {i+1}: series={series}, "
+                  f"{len(segments)} segments")
+            for seg in segments:
+                seg_name = seg.get("segment_name", "?")
+                options = seg.get("options", [])
+                is_fixed = seg.get("is_fixed", True)
+                codes = [o.get("code", "") for o in options]
+                print(f"  [DEBUG]   pos={seg.get('position')}: {seg_name} "
+                      f"({'fixed' if is_fixed else 'VARIABLE'}) "
+                      f"{len(options)} options: {codes[:20]}"
+                      f"{'...' if len(codes) > 20 else ''}")
+
         return _parse_ordering_code_response(raw_codes, company, category)
     except Exception as e:
         logger.error("Ordering code vision extraction error: %s", e)
+        print(f"[ERROR] Ordering code vision extraction failed: {e}")
         return []

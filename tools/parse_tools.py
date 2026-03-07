@@ -857,6 +857,20 @@ def generate_products_from_ordering_code(
     else:
         variable_segments_options = [seg.options for seg in variable_segments]
 
+    # Debug: show what segments and options are being used for generation
+    print(f"[DEBUG] Product generation for {definition.series}:")
+    print(f"  [DEBUG] Template: {definition.code_template}")
+    print(f"  [DEBUG] Fixed segments ({len(fixed_segments)}):")
+    for seg in fixed_segments:
+        code = seg.options[0].get("code", "") if seg.options else "?"
+        print(f"    pos={seg.position}: {seg.segment_name} = '{code}'")
+    print(f"  [DEBUG] Variable segments ({len(variable_segments)}):")
+    for seg in variable_segments:
+        codes = [o.get("code", "") for o in seg.options]
+        print(f"    pos={seg.position}: {seg.segment_name} "
+              f"({len(seg.options)} options): {codes[:20]}"
+              f"{'...' if len(codes) > 20 else ''}")
+
     # Calculate total combinations for logging
     total = 1
     for opts in variable_segments_options:

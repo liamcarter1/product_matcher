@@ -223,6 +223,9 @@ class IngestionPipeline:
         if spool_teaching_examples:
             print(f"[DEBUG] Using {len(spool_teaching_examples)} teaching example(s) for spool extraction")
 
+        # Diagnostics dict — shown in Gradio UI for admin visibility
+        self._last_extraction_diagnostics = {}
+
         # Step 5b: Text-based spool analysis (always runs — discovers new codes)
         if full_text:
             try:
@@ -230,10 +233,15 @@ class IngestionPipeline:
                     full_text, metadata.company,
                     few_shot_examples=spool_teaching_examples or None,
                 )
+                text_codes = [s.get("spool_code", "") for s in text_spools]
+                self._last_extraction_diagnostics["text_spools_found"] = len(text_spools)
+                self._last_extraction_diagnostics["text_spool_codes"] = text_codes
                 if text_spools:
-                    print(f"Spool text analysis: found {len(text_spools)} spool types")
+                    print(f"Spool text analysis: found {len(text_spools)} spool types: {text_codes}")
             except Exception as e:
                 print(f"Error in spool function analysis: {e}")
+                self._last_extraction_diagnostics["text_spools_found"] = 0
+                self._last_extraction_diagnostics["text_spool_error"] = str(e)
 
         # Step 5c: Vision extraction — runs if reference + text found fewer
         # than MIN_SPOOLS_BEFORE_VISION.  Previously this only ran when ZERO
@@ -243,9 +251,12 @@ class IngestionPipeline:
         combined_pre_vision = len(reference_spools) + len(text_spools)
         if combined_pre_vision < _MIN_SPOOLS_BEFORE_VISION:
             if combined_pre_vision:
+                logger.info("Only %d spools from reference+text (< %d) — running vision",
+                            combined_pre_vision, _MIN_SPOOLS_BEFORE_VISION)
                 print(f"[DEBUG] Only {combined_pre_vision} spools from reference+text "
                       f"(< {_MIN_SPOOLS_BEFORE_VISION}) — running vision to find more")
             else:
+                logger.info("No reference or text spools — running vision extraction")
                 print("[DEBUG] No reference or text spools — running vision extraction")
             page_classifications = _classify_spool_pages(pdf_path, pages)
             try:
@@ -269,14 +280,24 @@ class IngestionPipeline:
                     retry_on_low_count=True,
                     few_shot_examples=spool_teaching_examples or None,
                 )
+                vision_codes = [s.get("spool_code", "") for s in vision_spools]
+                self._last_extraction_diagnostics["vision_spools_found"] = len(vision_spools)
+                self._last_extraction_diagnostics["vision_spool_codes"] = vision_codes
                 if vision_spools:
                     # Flag all vision results as unconfirmed
                     for vs in vision_spools:
                         vs["source"] = "vision_unconfirmed"
                     print(f"Vision spool extraction: "
-                          f"{len(vision_spools)} symbols found")
+                          f"{len(vision_spools)} symbols found: {vision_codes}")
+                else:
+                    print("[DEBUG] Vision spool extraction returned 0 spools")
             except Exception as e:
                 logger.warning("Vision spool extraction error (non-fatal): %s", e)
+                print(f"[ERROR] Vision spool extraction failed: {e}")
+                self._last_extraction_diagnostics["vision_spools_found"] = 0
+                self._last_extraction_diagnostics["vision_spool_error"] = str(e)
+                import traceback
+                traceback.print_exc()
         else:
             print(f"[DEBUG] Skipping vision — {combined_pre_vision} spools already found from reference/text")
 
@@ -288,8 +309,10 @@ class IngestionPipeline:
         # Combine discovered spool codes for injection into ordering code prompt
         discovered_spool_codes = list(merged_spool_lookup.keys())
 
-        print(f"[DEBUG] Merged spool lookup: {len(merged_spool_lookup)} entries, "
-              f"codes: {sorted(set(s.get('spool_code', '').upper() for s in merged_spool_lookup.values() if s.get('spool_code')))}")
+        merged_codes = sorted(set(s.get('spool_code', '').upper() for s in merged_spool_lookup.values() if s.get('spool_code')))
+        self._last_extraction_diagnostics["merged_spool_count"] = len(merged_spool_lookup)
+        self._last_extraction_diagnostics["merged_spool_codes"] = merged_codes
+        print(f"[DEBUG] Merged spool lookup: {len(merged_spool_lookup)} entries, codes: {merged_codes}")
 
         # Step 6: Ordering code combinatorial generation
         # Extract ordering code breakdown tables and generate ALL product variants
@@ -359,6 +382,21 @@ class IngestionPipeline:
                     if ordering_defs:
                         self._last_extraction_method = "vision (text retry)"
                         print(f"[DEBUG] Vision retry found {len(ordering_defs)} definitions!")
+
+            # Capture ordering code diagnostics for UI display
+            if ordering_defs:
+                for defn in ordering_defs:
+                    seg_summary = []
+                    for seg in defn.segments:
+                        n_opts = len(seg.options)
+                        seg_summary.append(f"{seg.segment_name}({'F' if seg.is_fixed else n_opts})")
+                        if seg.segment_name == "spool_type" or any(
+                            o.get("maps_to_field") == "spool_type" for o in seg.options
+                        ):
+                            spool_codes_in_oc = [o.get("code", "") for o in seg.options]
+                            self._last_extraction_diagnostics["spool_segment_options"] = len(seg.options)
+                            self._last_extraction_diagnostics["spool_segment_codes"] = spool_codes_in_oc
+                    self._last_extraction_diagnostics["ordering_segments"] = " | ".join(seg_summary)
 
             # Step 6a: Augment spool segments with discovered spool codes
             # GPT-4o often only finds 1 spool option from the ordering code diagram
