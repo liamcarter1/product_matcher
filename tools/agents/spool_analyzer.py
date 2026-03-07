@@ -114,7 +114,10 @@ def analyze_spool_text(text: str, company: str, few_shot_examples: list[dict] | 
             )
             results.append(item)
 
+        found_codes = [r.get("spool_code", "") for r in results]
         logger.info("Spool text analysis found %d spool types for %s", len(results), company)
+        print(f"[DEBUG] Spool text analysis found {len(results)} spool types "
+              f"for {company}: {found_codes}")
         return results
 
     except Exception as e:
@@ -183,7 +186,7 @@ def analyze_spool_vision(
     company: str,
     page_classifications: dict[int, str] | None = None,
     dpi: int = 250,
-    max_tokens_per_batch: int = 4096,
+    max_tokens_per_batch: int = 8192,
     batch_size: int = 4,
     known_spool_codes: list[str] | None = None,
     retry_on_low_count: bool = True,
@@ -311,33 +314,43 @@ def analyze_spool_vision(
                 "Spool vision batch %d: %d spools found: %s",
                 batch_idx + 1, len(batch_codes), batch_codes,
             )
+            print(f"[DEBUG] Spool vision batch {batch_idx + 1}/{total_batches}: "
+                  f"found {len(batch_codes)} spools: {batch_codes}")
 
         except Exception as e:
             logger.warning(
                 "Spool vision batch %d failed (pages %s): %s",
                 batch_idx + 1, batch_page_indices, e,
             )
+            print(f"[WARNING] Spool vision batch {batch_idx + 1}/{total_batches} "
+                  f"FAILED (pages {batch_page_indices}): {e}")
 
     # --- Deduplicate --------------------------------------------------------
     unique = _deduplicate_spools(all_spools)
+    unique_codes = sorted(set(s.get("spool_code", "").upper() for s in unique if s.get("spool_code")))
 
     logger.info(
         "Spool vision total: %d unique spools for %s (from %d raw)",
         len(unique), company, len(all_spools),
     )
+    print(f"[DEBUG] Spool vision total: {len(unique)} unique spools for {company} "
+          f"(from {len(all_spools)} raw): {unique_codes}")
 
     # --- Retry with higher DPI if too few found ----------------------------
     if retry_on_low_count and len(unique) < min_expected_spools:
         retry_dpi = max(dpi + 50, 300)
+        retry_tokens = max(max_tokens_per_batch, 12288)
+        print(f"[DEBUG] Only {len(unique)} spools found (expected >= {min_expected_spools}). "
+              f"Retrying with DPI={retry_dpi}, tokens={retry_tokens}, ALL pages")
         logger.warning(
-            "Only %d spools found (expected >= %d). Retrying with DPI=%d, all pages",
-            len(unique), min_expected_spools, retry_dpi,
+            "Only %d spools found (expected >= %d). Retrying with DPI=%d, tokens=%d, all pages",
+            len(unique), min_expected_spools, retry_dpi, retry_tokens,
         )
         retry_result = analyze_spool_vision(
             pdf_path, company,
             page_classifications=None,  # All pages
             dpi=retry_dpi,
-            max_tokens_per_batch=max(max_tokens_per_batch + 2048, 6144),
+            max_tokens_per_batch=retry_tokens,
             batch_size=batch_size,
             known_spool_codes=known_spool_codes,
             retry_on_low_count=False,  # No recursive retry
