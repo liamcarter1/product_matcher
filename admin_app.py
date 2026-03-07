@@ -306,6 +306,9 @@ def process_upload(files, company, doc_type, category, pending_state):
     diag_lines = []
     diag = getattr(pipeline, "_last_extraction_diagnostics", {})
     if diag:
+        if diag.get("pdf_pages_extracted") is not None:
+            diag_lines.append(f"PDF text: {diag['pdf_pages_extracted']} pages, "
+                              f"{diag.get('pdf_total_chars', 0):,} chars")
         if diag.get("text_spools_found") is not None:
             diag_lines.append(f"Text spool analysis: {diag['text_spools_found']} spool types")
         if diag.get("text_spool_codes"):

@@ -29,7 +29,7 @@ TIER_LOW = "low"     # Fast/cheap (query parsing, classification)
 # See https://platform.claude.com/docs/en/about-claude/models/overview
 _ANTHROPIC_MODELS = {
     TIER_HIGH: "claude-sonnet-4-6",     # Best speed/intelligence ratio; replaced expensive Opus 4
-    TIER_MID: "claude-sonnet-4-20250514",
+    TIER_MID: "claude-sonnet-4-6",      # Same price as Sonnet 4.0, better extraction performance
     TIER_LOW: "claude-haiku-4-5-20251001",
 }
 
@@ -43,7 +43,7 @@ _OPENAI_MODELS = {
 # Vision model mapping (for image-heavy calls)
 _ANTHROPIC_VISION = {
     TIER_HIGH: "claude-sonnet-4-6",     # Best speed/intelligence ratio; replaced expensive Opus 4
-    TIER_MID: "claude-sonnet-4-20250514",
+    TIER_MID: "claude-sonnet-4-6",      # Same price as Sonnet 4.0, better vision accuracy
     TIER_LOW: "claude-haiku-4-5-20251001",
 }
 _OPENAI_VISION = {
@@ -155,8 +155,12 @@ def call_llm_json(
 
     # Anthropic path: no native JSON mode
     enhanced_system = system + "\n\nReturn ONLY valid JSON. No explanation, no markdown code fences."
+    content_len = len(user_content) if isinstance(user_content, str) else f"{len(user_content)} blocks"
+    print(f"[LLM] call_llm_json: model={model}, tier={tier}, max_tokens={max_tokens}, "
+          f"content_len={content_len}, vision={vision}")
     raw = _call_anthropic(model, enhanced_system, user_content,
                           max_tokens=max_tokens, temperature=temperature)
+    print(f"[LLM] Response received: {len(raw)} chars")
     return _parse_json_response(raw, model, max_tokens)
 
 

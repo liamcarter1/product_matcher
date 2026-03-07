@@ -131,6 +131,8 @@ class IngestionPipeline:
         """Process a PDF and return extracted products for review.
         Does NOT store yet - admin must confirm first."""
 
+        # Diagnostics dict — shown in Gradio UI for admin visibility
+        self._last_extraction_diagnostics = {}
         extracted_products = []
 
         # Step 1: Try table extraction (best for catalogues)
@@ -142,6 +144,13 @@ class IngestionPipeline:
         # Step 2: Extract full text for LLM processing
         pages = extract_text_from_pdf(pdf_path)
         full_text = "\n\n".join(p["text"] for p in pages)
+
+        # Diagnostic: show what the PDF parser extracted
+        self._last_extraction_diagnostics["pdf_pages_extracted"] = len(pages)
+        self._last_extraction_diagnostics["pdf_total_chars"] = len(full_text)
+        per_page = [(p["page"], len(p["text"])) for p in pages]
+        print(f"[DEBUG] PDF text extraction: {len(pages)} pages, {len(full_text)} total chars")
+        print(f"[DEBUG] Per-page chars: {per_page}")
 
         # Step 2.5: Detect graphics-heavy PDFs (ordering codes rendered as vector graphics)
         total_page_count = _get_pdf_page_count(pdf_path)
@@ -222,9 +231,6 @@ class IngestionPipeline:
         )
         if spool_teaching_examples:
             print(f"[DEBUG] Using {len(spool_teaching_examples)} teaching example(s) for spool extraction")
-
-        # Diagnostics dict — shown in Gradio UI for admin visibility
-        self._last_extraction_diagnostics = {}
 
         # Step 5b: Text-based spool analysis (always runs — discovers new codes)
         if full_text:
