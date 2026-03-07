@@ -235,18 +235,37 @@ class IngestionPipeline:
             except Exception as e:
                 print(f"Error in spool function analysis: {e}")
 
-        # Step 5c: Vision extraction — ONLY if reference + text found ZERO spools
-        if not reference_spools and not text_spools:
-            print("[DEBUG] No reference or text spools — falling back to vision (last resort)")
+        # Step 5c: Vision extraction — runs if reference + text found fewer
+        # than MIN_SPOOLS_BEFORE_VISION.  Previously this only ran when ZERO
+        # spools were found, which meant a single lucky text hit (e.g. "0A")
+        # suppressed the vision pipeline that reads the actual diagrams.
+        _MIN_SPOOLS_BEFORE_VISION = 5
+        combined_pre_vision = len(reference_spools) + len(text_spools)
+        if combined_pre_vision < _MIN_SPOOLS_BEFORE_VISION:
+            if combined_pre_vision:
+                print(f"[DEBUG] Only {combined_pre_vision} spools from reference+text "
+                      f"(< {_MIN_SPOOLS_BEFORE_VISION}) — running vision to find more")
+            else:
+                print("[DEBUG] No reference or text spools — running vision extraction")
             page_classifications = _classify_spool_pages(pdf_path, pages)
             try:
                 known_spools_db = self.db.get_spool_codes_for_series(
                     metadata.category or "", metadata.company,
                 )
+                # Pass any spools already found so LLM knows what to look for
+                already_found_codes = [
+                    s.get("spool_code", "") for s in text_spools
+                ] + [
+                    s.get("spool_code", "") for s in reference_spools
+                ]
+                already_found_codes = [c for c in already_found_codes if c]
+                combined_known = list(set(
+                    (known_spools_db or []) + already_found_codes
+                ))
                 vision_spools = extract_spool_symbols_from_pdf_v2(
                     pdf_path, metadata.company,
                     page_classifications=page_classifications,
-                    known_spool_codes=known_spools_db if known_spools_db else None,
+                    known_spool_codes=combined_known if combined_known else None,
                     retry_on_low_count=True,
                     few_shot_examples=spool_teaching_examples or None,
                 )
@@ -254,12 +273,12 @@ class IngestionPipeline:
                     # Flag all vision results as unconfirmed
                     for vs in vision_spools:
                         vs["source"] = "vision_unconfirmed"
-                    print(f"Vision spool extraction (last resort): "
+                    print(f"Vision spool extraction: "
                           f"{len(vision_spools)} symbols found")
             except Exception as e:
                 logger.warning("Vision spool extraction error (non-fatal): %s", e)
         else:
-            print("[DEBUG] Skipping vision — reference/text data available")
+            print(f"[DEBUG] Skipping vision — {combined_pre_vision} spools already found from reference/text")
 
         # Step 5d: Three-way merge (reference > text > vision)
         merged_spool_lookup = _merge_spool_results_v2(
