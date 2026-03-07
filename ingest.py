@@ -460,21 +460,11 @@ class IngestionPipeline:
                         logger.info("Found %d known spool codes for series %s",
                                     len(series_spools), definition.series)
 
-                # Look up primary (main runner) spool codes for this series
-                print(f"[DEBUG] Looking up primary spools for series={definition.series}, company={metadata.company}")
-                primary_spools = self.db.get_primary_spool_codes(
-                    definition.series, metadata.company,
-                )
-                print(f"[DEBUG] Primary spools: {primary_spools}")
-                if primary_spools:
-                    logger.info(
-                        "Primary spool filter active for %s: %d codes: %s",
-                        definition.series, len(primary_spools), primary_spools,
-                    )
-
+                # Generate ALL product combinations — no primary spool filter.
+                # Every orderable model code variant must be in the DB so the
+                # chat agent can match any user-entered code to a competitor.
                 generated = generate_products_from_ordering_code(
                     definition, metadata,
-                    primary_spool_codes=primary_spools if primary_spools else None,
                 )
                 if generated:
                     print(f"Generated {len(generated)} products from ordering code "
