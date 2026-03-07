@@ -26,8 +26,9 @@ TIER_MID = "mid"     # Medium tasks (specs, spool analysis, chat responses)
 TIER_LOW = "low"     # Fast/cheap (query parsing, classification)
 
 # Anthropic model mapping
+# See https://platform.claude.com/docs/en/about-claude/models/overview
 _ANTHROPIC_MODELS = {
-    TIER_HIGH: "claude-opus-4-0",
+    TIER_HIGH: "claude-sonnet-4-6",     # Best speed/intelligence ratio; replaced expensive Opus 4
     TIER_MID: "claude-sonnet-4-20250514",
     TIER_LOW: "claude-haiku-4-5-20251001",
 }
@@ -41,7 +42,7 @@ _OPENAI_MODELS = {
 
 # Vision model mapping (for image-heavy calls)
 _ANTHROPIC_VISION = {
-    TIER_HIGH: "claude-opus-4-0",
+    TIER_HIGH: "claude-sonnet-4-6",     # Best speed/intelligence ratio; replaced expensive Opus 4
     TIER_MID: "claude-sonnet-4-20250514",
     TIER_LOW: "claude-haiku-4-5-20251001",
 }

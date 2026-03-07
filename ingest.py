@@ -507,8 +507,10 @@ class IngestionPipeline:
                 gapfill_warnings.extend(warnings)
 
         except Exception as e:
-            print(f"Error in ordering code extraction: {e}")
+            print(f"[ERROR] Ordering code extraction failed: {e}")
             traceback.print_exc()
+            self._last_extraction_diagnostics["ordering_code_tables"] = 0
+            self._last_extraction_diagnostics["ordering_code_error"] = str(e)
 
         # Step 7: Merge spool function data into extracted products
         # merged_spool_lookup was built earlier (before ordering code extraction)
