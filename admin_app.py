@@ -1138,14 +1138,16 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
             gr.Markdown("#### Step 2: Classify Pages")
             gr.Markdown(
                 "Select the type for each page you want to teach from. "
-                "Pages marked 'Skip' will be ignored."
+                "Pages marked **skip** will be ignored.\n\n"
+                "**Valid types:** `ordering_code_table`, `spool_diagram`, "
+                "`spool_table`, `spec_table`, `skip`"
             )
             teach_gallery = gr.Gallery(
                 label="PDF Pages", columns=4, height="auto",
                 interactive=False,
             )
             teach_page_types = gr.Dataframe(
-                label="Page Classifications",
+                label="Page Classifications — click a Type cell to edit",
                 headers=["Page", "Type"],
                 datatype=["number", "str"],
                 interactive=True,
@@ -1228,14 +1230,24 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
             ):
                 """Run extraction on classified pages."""
                 if not rendered_pages:
-                    return "No pages loaded. Load a PDF first.", []
+                    return "No pages loaded. Load a PDF first.", [], {}
 
-                if not isinstance(page_classifications, list) or not page_classifications:
-                    return "No page classifications. Classify pages first.", []
+                # Gradio Dataframe returns pandas DataFrame or list-of-lists
+                import pandas as pd
+
+                if isinstance(page_classifications, pd.DataFrame):
+                    rows = page_classifications.values.tolist()
+                elif isinstance(page_classifications, list):
+                    rows = page_classifications
+                else:
+                    return "No page classifications. Classify pages first.", [], {}
+
+                if not rows:
+                    return "No page classifications. Classify pages first.", [], {}
 
                 # Parse classifications
                 classified = {}
-                for row in page_classifications:
+                for row in rows:
                     if len(row) >= 2:
                         page_num = int(row[0])
                         page_type = str(row[1]).strip().lower()
@@ -1243,7 +1255,7 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
                             classified[page_num] = page_type
 
                 if not classified:
-                    return "No pages classified (all marked as 'skip').", []
+                    return "No pages classified (all marked as 'skip'). Change page types before extracting.", [], {}
 
                 # Group pages by type and run appropriate extraction
                 results_rows = []
