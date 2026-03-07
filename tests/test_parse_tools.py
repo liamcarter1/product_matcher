@@ -316,8 +316,12 @@ class TestGenerateProductsFromOrderingCode:
         assert "nonexistent_field" in products[0].specs
         assert products[0].specs["nonexistent_field"] == "ignored"
 
-    def test_multi_variable_segments(self, metadata):
-        """Two variable segments should produce cartesian product."""
+    def test_multi_variable_segments_spool_first(self, metadata):
+        """With spool segment present, generates one product per spool type.
+
+        Non-spool variable segments use their first option as default.
+        This is the spool-first strategy for competitor matching.
+        """
         definition = OrderingCodeDefinition(
             company="Test", series="T",
             code_template="{01}-{02}-{03}",
@@ -337,12 +341,41 @@ class TestGenerateProductsFromOrderingCode:
             ],
         )
         products = generate_products_from_ordering_code(definition, metadata)
-        assert len(products) == 4  # 2 spool * 2 seal
+        assert len(products) == 2  # one per spool type (D, E); seal defaults to V
         codes = {p.model_code for p in products}
-        assert "T-D-V" in codes
-        assert "T-D-M" in codes
-        assert "T-E-V" in codes
-        assert "T-E-M" in codes
+        assert "T-D-V" in codes  # spool D, default seal V
+        assert "T-E-V" in codes  # spool E, default seal V
+        # Non-spool options stored as available_options
+        assert "available_options" in products[0].specs
+        assert "seal" in products[0].specs["available_options"]
+
+    def test_cartesian_product_without_spool(self, metadata):
+        """Without spool segment, falls back to Cartesian product."""
+        definition = OrderingCodeDefinition(
+            company="Test", series="T",
+            code_template="{01}-{02}-{03}",
+            segments=[
+                OrderingCodeSegment(position=1, segment_name="s", is_fixed=True,
+                                    options=[{"code": "T", "maps_to_field": "", "maps_to_value": None}]),
+                OrderingCodeSegment(position=2, segment_name="seal", is_fixed=False,
+                                    options=[
+                                        {"code": "V", "maps_to_field": "seal_material", "maps_to_value": "FKM"},
+                                        {"code": "M", "maps_to_field": "seal_material", "maps_to_value": "NBR"},
+                                    ]),
+                OrderingCodeSegment(position=3, segment_name="voltage", is_fixed=False,
+                                    options=[
+                                        {"code": "24", "maps_to_field": "coil_voltage", "maps_to_value": "24VDC"},
+                                        {"code": "12", "maps_to_field": "coil_voltage", "maps_to_value": "12VDC"},
+                                    ]),
+            ],
+        )
+        products = generate_products_from_ordering_code(definition, metadata)
+        assert len(products) == 4  # 2 seal * 2 voltage (no spool → Cartesian)
+        codes = {p.model_code for p in products}
+        assert "T-V-24" in codes
+        assert "T-V-12" in codes
+        assert "T-M-24" in codes
+        assert "T-M-12" in codes
 
 
 class TestPrimarySpoolFilter:
@@ -405,7 +438,11 @@ class TestPrimarySpoolFilter:
         assert len(products) == 2
 
     def test_only_affects_spool_segment(self, metadata):
-        """Primary filter should not affect non-spool segments."""
+        """Primary filter should not affect non-spool segments.
+
+        With spool-first strategy: one product per spool type, non-spool
+        segments use first option as default. Available options are stored.
+        """
         defn = self._make_definition(
             ["D", "E", "H"],
             extra_segments=[
@@ -420,12 +457,14 @@ class TestPrimarySpoolFilter:
         products = generate_products_from_ordering_code(
             defn, metadata, primary_spool_codes=["D"],
         )
-        # 1 spool * 2 seal = 2 products
-        assert len(products) == 2
-        spool_types = {p.specs.get("spool_type") for p in products}
-        assert spool_types == {"D"}
-        seals = {p.specs.get("seal_material") for p in products}
-        assert seals == {"FKM", "NBR"}
+        # Spool-first: 1 spool type × 1 product each = 1 product
+        # (seal defaults to first option "V", with "M" in available_options)
+        assert len(products) == 1
+        assert products[0].specs.get("spool_type") == "D"
+        assert products[0].specs.get("seal_material") == "FKM"  # default (first option)
+        # Other options are stored as available
+        assert "available_options" in products[0].specs
+        assert "seal" in products[0].specs["available_options"]
 
     def test_case_insensitive(self, metadata):
         """Primary spool filter should be case-insensitive."""

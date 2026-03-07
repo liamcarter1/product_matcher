@@ -795,7 +795,50 @@ def assemble_model_code(template: str, segment_values: dict) -> str:
     result = re.sub(r"/{2,}", "/", result)
     result = result.strip("-/. ")
 
+    # Fix duplicate prefix bug: LLM sometimes includes the series prefix
+    # literally in the template AND as segment values, producing e.g.
+    # "DG4V-3DG4V-3..." or "4WRE4WRE...".  Detect and remove the duplicate.
+    if len(result) > 4:
+        half = len(result) // 2
+        # Check if the first N chars are repeated immediately after
+        for prefix_len in range(3, min(half + 1, 20)):
+            prefix = result[:prefix_len]
+            if result[prefix_len:].startswith(prefix):
+                # Confirm it's a real duplication (not a coincidence like "111")
+                # by checking the prefix contains at least one letter
+                if any(c.isalpha() for c in prefix):
+                    result = result[prefix_len:]
+                    logger.info("Removed duplicate prefix '%s' from model code", prefix)
+                    break
+
     return result
+
+
+def _is_spool_segment(seg) -> bool:
+    """Check if a segment represents spool type (by name or option mapping)."""
+    if seg.segment_name == "spool_type":
+        return True
+    for opt in seg.options:
+        if opt.get("maps_to_field") == "spool_type":
+            return True
+    return False
+
+
+def _apply_segment_to_specs(seg, chosen_option: dict, segment_values: dict, specs: dict):
+    """Apply a chosen option from a segment to the segment_values and specs dicts."""
+    code = chosen_option.get("code", "")
+    segment_values[seg.position] = code
+    field = chosen_option.get("maps_to_field", "")
+    value = chosen_option.get("maps_to_value")
+    if field and value is not None:
+        specs[field] = value
+    # Also store segment by name for a visible column (human-readable)
+    seg_name = seg.segment_name
+    if seg_name and seg_name != field:
+        desc = chosen_option.get("description", "")
+        readable = f"{code} - {desc}" if code and desc else (desc or code or "")
+        if readable:
+            specs[seg_name] = readable
 
 
 def generate_products_from_ordering_code(
@@ -803,16 +846,21 @@ def generate_products_from_ordering_code(
     metadata: UploadMetadata,
     primary_spool_codes: list[str] = None,
 ) -> list[ExtractedProduct]:
-    """Generate all product combinations from an ordering code definition.
+    """Generate product variants from an ordering code definition.
 
-    For each combination of variable segment options, creates an ExtractedProduct
-    with the assembled model code and populated spec fields.
+    Uses a SPOOL-FIRST strategy: the spool type is the primary differentiator
+    for competitor matching, so we generate one product per spool type.
+    Other variable segments use their first (default) option, with available
+    alternatives stored in an 'available_options' spec field.
 
-    When primary_spool_codes is provided and non-empty, the spool type segment is
-    filtered to only those codes before generating combinations. This dramatically
-    reduces the combination count for valve series with many spool options.
+    This replaces the old Cartesian-product approach, which generated billions
+    of combinations and only ever produced the FIRST spool type (because
+    itertools.product iterates rightmost segments first, and spool type was
+    buried under millions of later-segment combos before it would change).
 
-    Caps output at MAX_COMBINATIONS to prevent combinatorial explosion.
+    When primary_spool_codes is provided, only those spool types are used.
+
+    Caps output at MAX_COMBINATIONS.
     """
     if not definition.segments:
         return []
@@ -821,41 +869,35 @@ def generate_products_from_ordering_code(
     fixed_segments = [s for s in definition.segments if s.is_fixed]
     variable_segments = [s for s in definition.segments if not s.is_fixed and len(s.options) > 0]
 
-    # Filter spool segment to primary codes only (if specified)
-    if primary_spool_codes:
-        primary_upper = {c.upper() for c in primary_spool_codes}
-        for seg in variable_segments:
-            is_spool_seg = seg.segment_name == "spool_type"
-            if not is_spool_seg:
-                for opt in seg.options:
-                    if opt.get("maps_to_field") == "spool_type":
-                        is_spool_seg = True
-                        break
-            if is_spool_seg:
-                original_options = list(seg.options)
-                filtered = [
-                    opt for opt in original_options
-                    if opt.get("code", "").upper() in primary_upper
-                ]
-                if filtered:
-                    logger.info(
-                        "Primary spool filter: %d -> %d spool options for %s",
-                        len(original_options), len(filtered), definition.series,
-                    )
-                    seg.options = filtered
-                else:
-                    logger.warning(
-                        "Primary spool filter: no matching primary codes for %s, "
-                        "keeping all %d options",
-                        definition.series, len(original_options),
-                    )
-                break
+    # Identify the spool segment (the primary variable)
+    spool_seg = None
+    non_spool_variable = []
+    for seg in variable_segments:
+        if spool_seg is None and _is_spool_segment(seg):
+            spool_seg = seg
+        else:
+            non_spool_variable.append(seg)
 
-    # If no variable segments, generate a single product
-    if not variable_segments:
-        variable_segments_options = [[]]
-    else:
-        variable_segments_options = [seg.options for seg in variable_segments]
+    # Filter spool segment to primary codes only (if specified)
+    if primary_spool_codes and spool_seg:
+        primary_upper = {c.upper() for c in primary_spool_codes}
+        original_options = list(spool_seg.options)
+        filtered = [
+            opt for opt in original_options
+            if opt.get("code", "").upper() in primary_upper
+        ]
+        if filtered:
+            logger.info(
+                "Primary spool filter: %d -> %d spool options for %s",
+                len(original_options), len(filtered), definition.series,
+            )
+            spool_seg.options = filtered
+        else:
+            logger.warning(
+                "Primary spool filter: no matching primary codes for %s, "
+                "keeping all %d options",
+                definition.series, len(original_options),
+            )
 
     # Debug: show what segments and options are being used for generation
     print(f"[DEBUG] Product generation for {definition.series}:")
@@ -864,85 +906,127 @@ def generate_products_from_ordering_code(
     for seg in fixed_segments:
         code = seg.options[0].get("code", "") if seg.options else "?"
         print(f"    pos={seg.position}: {seg.segment_name} = '{code}'")
-    print(f"  [DEBUG] Variable segments ({len(variable_segments)}):")
-    for seg in variable_segments:
-        codes = [o.get("code", "") for o in seg.options]
+    if spool_seg:
+        spool_codes = [o.get("code", "") for o in spool_seg.options]
+        print(f"  [DEBUG] SPOOL segment (PRIMARY, {len(spool_seg.options)} options):")
+        print(f"    pos={spool_seg.position}: {spool_seg.segment_name}: "
+              f"{spool_codes[:30]}{'...' if len(spool_codes) > 30 else ''}")
+    print(f"  [DEBUG] Other variable segments ({len(non_spool_variable)}) "
+          f"— using first option as default:")
+    for seg in non_spool_variable:
+        first_code = seg.options[0].get("code", "") if seg.options else "?"
+        n = len(seg.options)
         print(f"    pos={seg.position}: {seg.segment_name} "
-              f"({len(seg.options)} options): {codes[:20]}"
-              f"{'...' if len(codes) > 20 else ''}")
+              f"(default='{first_code}', {n} options available)")
 
-    # Calculate total combinations for logging
-    total = 1
-    for opts in variable_segments_options:
-        total *= max(len(opts), 1)
+    # Collect available options for non-spool segments (for reference)
+    available_options_summary = {}
+    for seg in non_spool_variable:
+        if len(seg.options) > 1:
+            available_options_summary[seg.segment_name] = [
+                opt.get("code", "") for opt in seg.options
+            ]
 
-    if total > MAX_COMBINATIONS:
-        print(f"WARNING: Ordering code for series {definition.series} has {total} combinations, "
-              f"capping at {MAX_COMBINATIONS}")
-
+    # --- Product generation: spool-first strategy ---
+    # If there's a spool segment: one product per spool type,
+    #   other segments use first option as default
+    # If no spool segment: Cartesian product over all variable segments (capped)
     products = []
-    combos = itertools.product(*variable_segments_options) if variable_segments else [()]
     _logged_first = False
 
-    for combo in itertools.islice(combos, MAX_COMBINATIONS):
-        segment_values = {}
-        specs = dict(definition.shared_specs)
+    if spool_seg:
+        # SPOOL-FIRST: one product per spool type
+        spool_options = spool_seg.options
+        print(f"[DEBUG] Generating {len(spool_options)} products "
+              f"(one per spool type) for {definition.series}")
 
-        # Fixed segments: use their single option
-        for seg in fixed_segments:
-            if seg.options:
-                opt = seg.options[0]
-                code = opt.get("code", "")
-                segment_values[seg.position] = code
-                field = opt.get("maps_to_field", "")
-                value = opt.get("maps_to_value")
-                if field and value is not None:
-                    specs[field] = value
-                # Also store segment by name for a visible column (human-readable)
-                seg_name = seg.segment_name
-                if seg_name and seg_name != field:
-                    desc = opt.get("description", "")
-                    readable = f"{code} - {desc}" if code and desc else (desc or code or "")
-                    if readable:
-                        specs[seg_name] = readable
+        for spool_option in itertools.islice(spool_options, MAX_COMBINATIONS):
+            segment_values = {}
+            specs = dict(definition.shared_specs)
 
-        # Variable segments: use the chosen option from this combination
-        for seg, chosen_option in zip(variable_segments, combo):
-            code = chosen_option.get("code", "")
-            segment_values[seg.position] = code
-            field = chosen_option.get("maps_to_field", "")
-            value = chosen_option.get("maps_to_value")
-            if field and value is not None:
-                specs[field] = value
-            # Also store segment by name for a visible column (human-readable)
-            seg_name = seg.segment_name
-            if seg_name and seg_name != field:
-                desc = chosen_option.get("description", "")
-                readable = f"{code} - {desc}" if code and desc else (desc or code or "")
-                if readable:
-                    specs[seg_name] = readable
+            # Fixed segments
+            for seg in fixed_segments:
+                if seg.options:
+                    _apply_segment_to_specs(seg, seg.options[0], segment_values, specs)
 
-        # Assemble the model code
-        model_code = assemble_model_code(definition.code_template, segment_values)
-        if not model_code:
-            continue
+            # Spool segment — use this iteration's spool option
+            _apply_segment_to_specs(spool_seg, spool_option, segment_values, specs)
 
-        # Log the first product's full spec keys for diagnostics
-        if not _logged_first:
-            logger.info("First generated product '%s' spec keys: %s",
-                        model_code, sorted(specs.keys()))
-            _logged_first = True
+            # Non-spool variable segments — use first (default) option
+            for seg in non_spool_variable:
+                if seg.options:
+                    _apply_segment_to_specs(seg, seg.options[0], segment_values, specs)
 
-        product = ExtractedProduct(
-            model_code=model_code,
-            product_name=definition.product_name,
-            category=definition.category or metadata.category or "",
-            specs=specs,
-            raw_text=f"Generated from ordering code table: series {definition.series}",
-            confidence=0.85,
-            source="ordering_code",
-        )
-        products.append(product)
+            # Store what other options are available (so user knows)
+            if available_options_summary:
+                specs["available_options"] = available_options_summary
+
+            # Assemble the model code
+            model_code = assemble_model_code(definition.code_template, segment_values)
+            if not model_code:
+                continue
+
+            if not _logged_first:
+                logger.info("First generated product '%s' spec keys: %s",
+                            model_code, sorted(specs.keys()))
+                _logged_first = True
+
+            product = ExtractedProduct(
+                model_code=model_code,
+                product_name=definition.product_name,
+                category=definition.category or metadata.category or "",
+                specs=specs,
+                raw_text=f"Generated from ordering code table: series {definition.series}",
+                confidence=0.85,
+                source="ordering_code",
+            )
+            products.append(product)
+
+    else:
+        # NO SPOOL SEGMENT: Cartesian product over all variable segments
+        if not variable_segments:
+            variable_segments_options = [[]]
+        else:
+            variable_segments_options = [seg.options for seg in variable_segments]
+
+        total = 1
+        for opts in variable_segments_options:
+            total *= max(len(opts), 1)
+        if total > MAX_COMBINATIONS:
+            print(f"WARNING: Ordering code for {definition.series} has {total} "
+                  f"combinations, capping at {MAX_COMBINATIONS}")
+
+        combos = itertools.product(*variable_segments_options) if variable_segments else [()]
+        for combo in itertools.islice(combos, MAX_COMBINATIONS):
+            segment_values = {}
+            specs = dict(definition.shared_specs)
+
+            for seg in fixed_segments:
+                if seg.options:
+                    _apply_segment_to_specs(seg, seg.options[0], segment_values, specs)
+
+            for seg, chosen_option in zip(variable_segments, combo):
+                _apply_segment_to_specs(seg, chosen_option, segment_values, specs)
+
+            model_code = assemble_model_code(definition.code_template, segment_values)
+            if not model_code:
+                continue
+
+            if not _logged_first:
+                logger.info("First generated product '%s' spec keys: %s",
+                            model_code, sorted(specs.keys()))
+                _logged_first = True
+
+            product = ExtractedProduct(
+                model_code=model_code,
+                product_name=definition.product_name,
+                category=definition.category or metadata.category or "",
+                specs=specs,
+                raw_text=f"Generated from ordering code table: series {definition.series}",
+                confidence=0.85,
+                source="ordering_code",
+            )
+            products.append(product)
 
     return products
 
