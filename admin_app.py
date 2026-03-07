@@ -1272,42 +1272,46 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
                 if not manufacturer:
                     return "Please select a manufacturer.", [], [], []
 
-                from tools.agents.base import render_pdf_pages
-                import tempfile
-
-                pdf_path = pdf_file.name if hasattr(pdf_file, 'name') else str(pdf_file)
-
                 try:
-                    import fitz
-                    doc = fitz.open(pdf_path)
-                    total_pages = len(doc)
-                    doc.close()
-                except Exception:
-                    total_pages = 20
+                    from tools.agents.base import render_pdf_pages
+                    import tempfile
 
-                page_indices = list(range(total_pages))
-                rendered = render_pdf_pages(pdf_path, page_indices, dpi=150)
+                    pdf_path = pdf_file.name if hasattr(pdf_file, 'name') else str(pdf_file)
+                    logger.info(f"Teaching Mode: loading PDF from {pdf_path}")
 
-                if not rendered:
-                    return "No pages could be rendered from this PDF.", [], [], []
+                    try:
+                        import fitz
+                        doc = fitz.open(pdf_path)
+                        total_pages = len(doc)
+                        doc.close()
+                    except Exception as e:
+                        logger.warning(f"Could not count pages with fitz: {e}")
+                        total_pages = 20
 
-                # Write temp images for gallery display
-                import base64 as b64_mod
-                gallery_images = []
-                for page_idx, img_b64 in rendered:
-                    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-                    tmp.write(b64_mod.b64decode(img_b64))
-                    tmp.close()
-                    gallery_images.append((tmp.name, f"Page {page_idx + 1}"))
+                    page_indices = list(range(total_pages))
+                    rendered = render_pdf_pages(pdf_path, page_indices, dpi=150)
 
-                # Build classification table
-                page_types_data = [
-                    [page_idx + 1, "skip"]
-                    for page_idx, _ in rendered
-                ]
+                    if not rendered:
+                        return "No pages could be rendered from this PDF.", [], [], []
 
-                status = f"Rendered {len(rendered)} pages from {os.path.basename(pdf_path)}."
-                return status, gallery_images, page_types_data, rendered
+                    import base64 as b64_mod
+                    gallery_images = []
+                    for page_idx, img_b64 in rendered:
+                        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                        tmp.write(b64_mod.b64decode(img_b64))
+                        tmp.close()
+                        gallery_images.append((tmp.name, f"Page {page_idx + 1}"))
+
+                    page_types_data = [
+                        [page_idx + 1, "skip"]
+                        for page_idx, _ in rendered
+                    ]
+
+                    status = f"Rendered {len(rendered)} pages from {os.path.basename(pdf_path)}."
+                    return status, gallery_images, page_types_data, rendered
+                except Exception as e:
+                    logger.error(f"Teaching Mode load_reference_pdf error: {e}", exc_info=True)
+                    return f"Error loading PDF: {e}", [], [], []
 
             def run_teaching_extraction(
                 rendered_pages, page_classifications, manufacturer, series, pdf_file
@@ -1316,67 +1320,67 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
                 if not rendered_pages:
                     return "No pages loaded. Load a PDF first.", [], {}
 
-                # Gradio Dataframe returns pandas DataFrame or list-of-lists
-                import pandas as pd
+                try:
+                    import pandas as pd
 
-                if isinstance(page_classifications, pd.DataFrame):
-                    rows = page_classifications.values.tolist()
-                elif isinstance(page_classifications, list):
-                    rows = page_classifications
-                else:
-                    return "No page classifications. Classify pages first.", [], {}
-
-                if not rows:
-                    return "No page classifications. Classify pages first.", [], {}
-
-                # Parse classifications
-                classified = {}
-                for row in rows:
-                    if len(row) >= 2:
-                        page_num = int(row[0])
-                        page_type = str(row[1]).strip().lower()
-                        if page_type and page_type != "skip":
-                            classified[page_num] = page_type
-
-                if not classified:
-                    return "No pages classified (all marked as 'skip'). Change page types before extracting.", [], {}
-
-                # Group pages by type and run appropriate extraction
-                results_rows = []
-                page_data = {}
-
-                for page_num, page_type in sorted(classified.items()):
-                    # Find the rendered image for this page
-                    matching = [
-                        (idx, b64) for idx, b64 in rendered_pages
-                        if idx + 1 == page_num
-                    ]
-                    if not matching:
-                        continue
-
-                    page_idx, img_b64 = matching[0]
-                    page_data[page_num] = {
-                        "page_type": page_type,
-                        "page_idx": page_idx,
-                        "image_b64": img_b64,
-                        "extraction": None,
-                    }
-
-                    if page_type in ("ordering_code_table", "spool_diagram", "spool_table"):
-                        results_rows.append([
-                            page_num, page_type, "(ready for extraction)", ""
-                        ])
+                    if isinstance(page_classifications, pd.DataFrame):
+                        rows = page_classifications.values.tolist()
+                    elif isinstance(page_classifications, list):
+                        rows = page_classifications
                     else:
-                        results_rows.append([
-                            page_num, page_type, "(classified)", ""
-                        ])
+                        return "No page classifications. Classify pages first.", [], {}
 
-                status = (
-                    f"Classified {len(classified)} page(s): "
-                    + ", ".join(f"p{p}={t}" for p, t in sorted(classified.items()))
-                    + "\n\nEdit the annotation below, then click 'Save as Teaching Example(s)'."
-                )
-                return status, results_rows, page_data
+                    if not rows:
+                        return "No page classifications. Classify pages first.", [], {}
+
+                    classified = {}
+                    for row in rows:
+                        if len(row) >= 2:
+                            page_num = int(row[0])
+                            page_type = str(row[1]).strip().lower()
+                            if page_type and page_type != "skip":
+                                classified[page_num] = page_type
+
+                    if not classified:
+                        return "No pages classified (all marked as 'skip'). Change page types before extracting.", [], {}
+
+                    results_rows = []
+                    page_data = {}
+
+                    for page_num, page_type in sorted(classified.items()):
+                        matching = [
+                            (idx, b64) for idx, b64 in rendered_pages
+                            if idx + 1 == page_num
+                        ]
+                        if not matching:
+                            continue
+
+                        page_idx, img_b64 = matching[0]
+                        page_data[page_num] = {
+                            "page_type": page_type,
+                            "page_idx": page_idx,
+                            "image_b64": img_b64,
+                            "extraction": None,
+                        }
+
+                        if page_type in ("ordering_code_table", "spool_diagram", "spool_table"):
+                            results_rows.append([
+                                page_num, page_type, "(ready for extraction)", ""
+                            ])
+                        else:
+                            results_rows.append([
+                                page_num, page_type, "(classified)", ""
+                            ])
+
+                    status = (
+                        f"Classified {len(classified)} page(s): "
+                        + ", ".join(f"p{p}={t}" for p, t in sorted(classified.items()))
+                        + "\n\nEdit the annotation below, then click 'Save as Teaching Example(s)'."
+                    )
+                    return status, results_rows, page_data
+                except Exception as e:
+                    logger.error(f"Teaching Mode extraction error: {e}", exc_info=True)
+                    return f"Error during extraction: {e}", [], {}
 
             def save_teaching_examples(
                 rendered_pages, page_data, page_classifications,
