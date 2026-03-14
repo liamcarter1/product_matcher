@@ -769,6 +769,34 @@ class ProductDB:
                 )
             self.conn.commit()
 
+    def update_spool_type_reference(self, ref_id: str, **fields) -> bool:
+        """Update specific fields of a spool type reference by ID.
+
+        Allowed fields: description, center_condition, solenoid_a_function,
+        solenoid_b_function, is_primary, canonical_pattern.
+        Returns True if a row was updated.
+        """
+        allowed = {
+            "description", "center_condition", "solenoid_a_function",
+            "solenoid_b_function", "is_primary", "canonical_pattern",
+        }
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
+            return False
+
+        set_clause = ", ".join(f"{col} = ?" for col in updates)
+        values = list(updates.values())
+        values.append(ref_id)
+
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                f"UPDATE spool_type_reference SET {set_clause} WHERE id = ?",
+                values,
+            )
+            self.conn.commit()
+            return cursor.rowcount > 0
+
     def get_primary_spool_codes(
         self,
         series_prefix: str,

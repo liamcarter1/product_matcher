@@ -615,21 +615,60 @@ def get_spool_type_table(manufacturer_filter="All"):
     if not refs:
         return pd.DataFrame(columns=[
             "ID", "Series", "Manufacturer", "Spool Code",
-            "Description", "Center Condition", "Primary", "Source",
+            "Description", "Center Condition",
+            "Solenoid A", "Solenoid B", "Primary", "Source",
         ])
     rows = []
     for r in refs:
         rows.append({
-            "ID": str(r.get("id", ""))[:8],
+            "ID": str(r.get("id", "")),
             "Series": r.get("series_prefix", ""),
             "Manufacturer": r.get("manufacturer", ""),
             "Spool Code": r.get("spool_code", ""),
             "Description": r.get("description", ""),
             "Center Condition": r.get("center_condition", ""),
+            "Solenoid A": r.get("solenoid_a_function", ""),
+            "Solenoid B": r.get("solenoid_b_function", ""),
             "Primary": "Yes" if r.get("is_primary") else "",
             "Source": r.get("source", ""),
         })
     return pd.DataFrame(rows)
+
+
+def save_spool_edits(edited_df):
+    """Compare edited DataFrame against DB and save changes."""
+    if edited_df is None or edited_df.empty:
+        return "No data to save.", get_spool_type_table()
+
+    updated = 0
+    errors = []
+    for _, row in edited_df.iterrows():
+        ref_id = str(row.get("ID", "")).strip()
+        if not ref_id:
+            continue
+        fields = {}
+        desc = str(row.get("Description", "")).strip()
+        center = str(row.get("Center Condition", "")).strip()
+        sol_a = str(row.get("Solenoid A", "")).strip()
+        sol_b = str(row.get("Solenoid B", "")).strip()
+        primary_val = str(row.get("Primary", "")).strip()
+
+        fields["description"] = desc[:200]
+        fields["center_condition"] = center[:200]
+        fields["solenoid_a_function"] = sol_a[:200]
+        fields["solenoid_b_function"] = sol_b[:200]
+        fields["is_primary"] = 1 if primary_val.lower() in ("yes", "1", "true") else 0
+
+        try:
+            db.update_spool_type_reference(ref_id, **fields)
+            updated += 1
+        except Exception as e:
+            errors.append(f"Row {ref_id[:8]}: {e}")
+
+    status = f"Updated {updated} rows."
+    if errors:
+        status += f" Errors: {'; '.join(errors)}"
+    return status, get_spool_type_table()
 
 
 def add_spool_type_ref(series_prefix, manufacturer, spool_code, description, center_condition, is_primary):
@@ -1012,9 +1051,18 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
             )
 
             spool_ref_table = gr.Dataframe(
-                label="Known Spool Types",
+                label="Known Spool Types (edit Description, Center Condition, Solenoid A/B, Primary directly)",
                 value=get_spool_type_table(),
-                interactive=False,
+                interactive=True,
+            )
+            with gr.Row():
+                spool_save_btn = gr.Button("Save Changes", variant="primary")
+                spool_save_status = gr.Textbox(label="Save Status", interactive=False)
+
+            spool_save_btn.click(
+                save_spool_edits,
+                inputs=[spool_ref_table],
+                outputs=[spool_save_status, spool_ref_table],
             )
             spool_refresh_btn.click(
                 get_spool_type_table,
