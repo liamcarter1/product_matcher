@@ -788,27 +788,70 @@ def assemble_model_code(template: str, segment_values: dict) -> str:
         placeholder = f"{{{pos:02d}}}"
         result = result.replace(placeholder, value if value else "")
 
+    # Remove any leftover unfilled placeholders like {07}, {12}, etc.
+    result = re.sub(r'\{\d{1,3}\}', '', result)
+
+    # Remove asterisks/wildcards that LLMs sometimes leave in templates
+    result = result.replace('*', '')
+
     # Clean up artifacts from empty optional segments:
     # - Double separators (e.g., "--" from empty step function code)
     # - Trailing/leading separators
-    result = re.sub(r"-{2,}", "-", result)
-    result = re.sub(r"/{2,}", "/", result)
-    result = result.strip("-/. ")
+    result = re.sub(r'-{2,}', '-', result)
+    result = re.sub(r'/{2,}', '/', result)
+    result = result.strip('-/. ')
 
     # Fix duplicate prefix bug: LLM sometimes includes the series prefix
     # literally in the template AND as segment values, producing e.g.
     # "DG4V-3DG4V-3..." or "4WRE4WRE...".  Detect and remove the duplicate.
     if len(result) > 4:
         half = len(result) // 2
-        # Check if the first N chars are repeated immediately after
         for prefix_len in range(3, min(half + 1, 20)):
             prefix = result[:prefix_len]
             if result[prefix_len:].startswith(prefix):
-                # Confirm it's a real duplication (not a coincidence like "111")
-                # by checking the prefix contains at least one letter
                 if any(c.isalpha() for c in prefix):
                     result = result[prefix_len:]
                     logger.info("Removed duplicate prefix '%s' from model code", prefix)
+                    break
+
+    return result
+
+
+def assemble_model_code_from_segments(
+    segments: list, segment_values: dict,
+) -> str:
+    """Build model code directly from ordered segments and their separators.
+
+    More reliable than template-based assembly — uses each segment's
+    separator_before field to join segment values in position order.
+    Falls back to assemble_model_code(template, ...) if separators are missing.
+    """
+    # Sort segments by position
+    ordered = sorted(segments, key=lambda s: s.position)
+
+    parts = []
+    for seg in ordered:
+        sep = getattr(seg, 'separator_before', '') or ''
+        code = segment_values.get(seg.position, '')
+        if code is None:
+            code = ''
+        parts.append(sep + code)
+
+    result = ''.join(parts)
+
+    # Clean up (same as template-based)
+    result = re.sub(r'-{2,}', '-', result)
+    result = re.sub(r'/{2,}', '/', result)
+    result = result.strip('-/. ')
+
+    # Fix duplicate prefix
+    if len(result) > 4:
+        half = len(result) // 2
+        for prefix_len in range(3, min(half + 1, 20)):
+            prefix = result[:prefix_len]
+            if result[prefix_len:].startswith(prefix):
+                if any(c.isalpha() for c in prefix):
+                    result = result[prefix_len:]
                     break
 
     return result
@@ -955,14 +998,22 @@ def generate_products_from_ordering_code(
         for seg, chosen_option in zip(variable_segments, combo):
             _apply_segment_to_specs(seg, chosen_option, segment_values, specs)
 
-        # Assemble the model code
-        model_code = assemble_model_code(definition.code_template, segment_values)
+        # Assemble the model code — prefer segment-based (uses separators),
+        # fall back to template-based if segment assembly gives a shorter result
+        seg_code = assemble_model_code_from_segments(
+            definition.segments, segment_values,
+        )
+        tmpl_code = assemble_model_code(definition.code_template, segment_values)
+        # Use whichever method produced a longer, more complete code
+        model_code = seg_code if len(seg_code) >= len(tmpl_code) else tmpl_code
         if not model_code:
             continue
 
         if not _logged_first:
             logger.info("First generated product '%s' spec keys: %s",
                         model_code, sorted(specs.keys()))
+            if seg_code != tmpl_code:
+                print(f"[DEBUG] Model code assembly: segment='{seg_code}' vs template='{tmpl_code}'")
             _logged_first = True
 
         product = ExtractedProduct(
