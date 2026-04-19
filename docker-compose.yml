@@ -1,0 +1,32 @@
+# Danfoss RAG Chatbot - Docker Compose Configuration
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: danfoss-rag-backend
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env
+    volumes:
+      # Mount uploads directory for persistent storage
+      - ./uploads:/app/uploads
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+    networks:
+      - danfoss-network
+
+networks:
+  danfoss-network:
+    driver: bridge

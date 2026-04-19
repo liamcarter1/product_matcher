@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Danfoss Product Catalog - Widget Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: #f5f5f5;
+        }
+
+        .header {
+            background: #E2000F;
+            color: white;
+            padding: 1rem 2rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .header h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .hero {
+            background: white;
+            padding: 3rem;
+            border-radius: 8px;
+            margin-bottom: 2rem;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .hero h2 {
+            color: #E2000F;
+            margin-bottom: 1rem;
+        }
+
+        .products-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .product-card {
+            background: white;
+            border-radius: 8px;
+            padding: 1.5rem;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .product-card h3 {
+            color: #333;
+            margin-bottom: 0.5rem;
+        }
+
+        .product-card .part-number {
+            font-family: monospace;
+            background: #f0f0f0;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            display: inline-block;
+            margin-bottom: 0.5rem;
+        }
+
+        .product-card .description {
+            color: #666;
+            font-size: 0.9rem;
+            margin-bottom: 1rem;
+        }
+
+        .product-card .specs {
+            font-size: 0.85rem;
+            color: #444;
+        }
+
+        .product-card .specs span {
+            display: block;
+            margin-bottom: 0.25rem;
+        }
+
+        .integration-guide {
+            background: white;
+            padding: 2rem;
+            border-radius: 8px;
+            margin-top: 2rem;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .integration-guide h3 {
+            color: #E2000F;
+            margin-bottom: 1rem;
+        }
+
+        .code-block {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 1rem;
+            border-radius: 4px;
+            overflow-x: auto;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.9rem;
+            margin: 1rem 0;
+        }
+
+        .code-block .tag { color: #569cd6; }
+        .code-block .attr { color: #9cdcfe; }
+        .code-block .string { color: #ce9178; }
+        .code-block .comment { color: #6a9955; }
+
+        .note {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 1rem;
+            margin: 1rem 0;
+            border-radius: 0 4px 4px 0;
+        }
+
+        footer {
+            text-align: center;
+            padding: 2rem;
+            color: #666;
+            font-size: 0.9rem;
+        }
+
+        /* Highlight the chat widget area */
+        .widget-indicator {
+            position: fixed;
+            bottom: 90px;
+            right: 90px;
+            background: #333;
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            animation: pulse 2s infinite;
+            pointer-events: none;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.8; }
+            50% { opacity: 0.4; }
+        }
+
+        /* Hide indicator after a few seconds */
+        .widget-indicator.hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="white">
+            <circle cx="12" cy="12" r="10" stroke="white" stroke-width="2" fill="none"/>
+            <path d="M12 6v12M6 12h12" stroke="white" stroke-width="2"/>
+        </svg>
+        <h1>Danfoss Distributor Portal</h1>
+    </header>
+
+    <div class="container">
+        <section class="hero">
+            <h2>Welcome to the Product Catalog</h2>
+            <p>
+                Browse our selection of Danfoss drives and components. Need help finding
+                a replacement for a competitor part? Click the chat button in the bottom
+                right corner to get instant assistance from our AI-powered product assistant.
+            </p>
+        </section>
+
+        <h2 style="margin-bottom: 1rem;">Featured Products</h2>
+
+        <div class="products-grid">
+            <div class="product-card">
+                <h3>VLT Micro Drive</h3>
+                <span class="part-number">FC-051P4K0T4E20</span>
+                <p class="description">Compact frequency converter for simple applications</p>
+                <div class="specs">
+                    <span><strong>Power:</strong> 4.0 kW</span>
+                    <span><strong>Voltage:</strong> 380-480V AC</span>
+                    <span><strong>IP Rating:</strong> IP20</span>
+                </div>
+            </div>
+
+            <div class="product-card">
+                <h3>VLT AutomationDrive</h3>
+                <span class="part-number">FC-302P7K5T5E20</span>
+                <p class="description">Advanced drive for demanding automation applications</p>
+                <div class="specs">
+                    <span><strong>Power:</strong> 7.5 kW</span>
+                    <span><strong>Voltage:</strong> 380-500V AC</span>
+                    <span><strong>IP Rating:</strong> IP20</span>
+                </div>
+            </div>
+
+            <div class="product-card">
+                <h3>VLT HVAC Drive</h3>
+                <span class="part-number">FC-102P11KT4E20</span>
+                <p class="description">Dedicated drive for HVAC systems</p>
+                <div class="specs">
+                    <span><strong>Power:</strong> 11 kW</span>
+                    <span><strong>Voltage:</strong> 380-480V AC</span>
+                    <span><strong>IP Rating:</strong> IP20</span>
+                </div>
+            </div>
+
+            <div class="product-card">
+                <h3>VLT Soft Starter</h3>
+                <span class="part-number">MCD-201-030-T4-CV3</span>
+                <p class="description">Compact soft starter for standard applications</p>
+                <div class="specs">
+                    <span><strong>Current:</strong> 30A</span>
+                    <span><strong>Voltage:</strong> 200-440V AC</span>
+                    <span><strong>Control:</strong> Voltage Ramp</span>
+                </div>
+            </div>
+        </div>
+
+        <section class="integration-guide">
+            <h3>Widget Integration Guide</h3>
+            <p>To add the Danfoss Product Assistant to your website, simply add this script tag before the closing <code>&lt;/body&gt;</code> tag:</p>
+
+            <div class="code-block">
+<span class="comment">&lt;!-- Danfoss RAG Chat Widget --&gt;</span>
+<span class="tag">&lt;script</span>
+    <span class="attr">src</span>=<span class="string">"https://your-domain.com/static/danfoss-chat-widget.js"</span>
+    <span class="attr">data-api-url</span>=<span class="string">"https://your-api-domain.com"</span>
+    <span class="attr">data-primary-color</span>=<span class="string">"#E2000F"</span>
+    <span class="attr">data-title</span>=<span class="string">"Danfoss Product Assistant"</span><span class="tag">&gt;</span>
+<span class="tag">&lt;/script&gt;</span>
+            </div>
+
+            <h4>Configuration Options</h4>
+            <ul style="margin: 1rem 0; padding-left: 2rem;">
+                <li><code>data-api-url</code> - The URL of your Danfoss RAG API backend</li>
+                <li><code>data-primary-color</code> - Brand color for the widget (default: #E2000F)</li>
+                <li><code>data-title</code> - Title shown in the chat header</li>
+            </ul>
+
+            <div class="note">
+                <strong>Note:</strong> Make sure your API backend is configured with proper CORS settings
+                to allow requests from your distributor website domain.
+            </div>
+        </section>
+    </div>
+
+    <footer>
+        <p>Demo page for Danfoss RAG Chat Widget | For testing purposes only</p>
+    </footer>
+
+    <!-- Widget indicator (shows briefly) -->
+    <div class="widget-indicator" id="indicator">
+        Try the chat widget
+    </div>
+
+    <!--
+        DANFOSS CHAT WIDGET
+
+        This loads the embeddable chat widget.
+        In production, update the data-api-url to your deployed API endpoint.
+    -->
+    <script
+        src="danfoss-chat-widget.js"
+        data-api-url="http://localhost:8000"
+        data-primary-color="#E2000F"
+        data-title="Danfoss Product Assistant">
+    </script>
+
+    <script>
+        // Hide the indicator after 5 seconds
+        setTimeout(() => {
+            document.getElementById('indicator').classList.add('hidden');
+        }, 5000);
+    </script>
+</body>
+</html>

@@ -1,0 +1,124 @@
+
+DANFOSS VLT MICRO DRIVE FC 051
+QUICK START GUIDE
+
+================================================================================
+1. SAFETY INSTRUCTIONS
+================================================================================
+
+Before installing and operating the VLT Micro Drive, read this guide carefully.
+All work on the drive must be performed by qualified personnel.
+
+WARNING: High voltage! Risk of electric shock.
+Wait at least 4 minutes after disconnecting power before servicing.
+
+================================================================================
+2. MECHANICAL INSTALLATION
+================================================================================
+
+2.1 Mounting Position
+- The drive must be mounted vertically on a flat surface
+- Ensure adequate cooling clearance (100mm top and bottom)
+- IP20 units require installation in an IP54 or better enclosure
+
+2.2 Dimensions
+- FC-051P1K5: 100 x 68 x 155 mm (HxWxD)
+- FC-051P4K0: 148 x 90 x 180 mm (HxWxD)
+- FC-051P7K5: 195 x 110 x 220 mm (HxWxD)
+
+2.3 Weight
+- 1.5kW model: 1.2 kg
+- 4.0kW model: 2.5 kg
+- 7.5kW model: 4.8 kg
+
+================================================================================
+3. ELECTRICAL INSTALLATION
+================================================================================
+
+3.1 Mains Connection
+- Input voltage: 200-240V 1-phase or 380-480V 3-phase
+- Use appropriate cable sizes per local regulations
+- Install line fuses or MCB as per specifications
+
+3.2 Motor Connection
+- U, V, W terminals for 3-phase motor connection
+- PE terminal for protective earth
+- Maximum cable length: 50m unscreened, 25m screened
+
+3.3 Control Terminals
+- 18: Digital input 1 (Start)
+- 19: Digital input 2 (Reversing)
+- 27: Digital input 3 (Coast Stop)
+- 53: Analog input (0-10V / 4-20mA)
+- 42: +24V DC output
+- 39: Analog output
+
+================================================================================
+4. PROGRAMMING
+================================================================================
+
+4.1 Basic Parameters
+- Parameter 1-20: Motor nominal power (kW)
+- Parameter 1-22: Motor nominal voltage (V)
+- Parameter 1-23: Motor nominal frequency (Hz)
+- Parameter 1-24: Motor nominal current (A)
+- Parameter 1-25: Motor nominal speed (RPM)
+
+4.2 Quick Setup
+1. Set motor nameplate data (par. 1-20 to 1-25)
+2. Set application type (par. 1-00)
+3. Perform AMA (par. 1-29)
+4. Set reference source (par. 3-00)
+5. Start and adjust as needed
+
+================================================================================
+5. TROUBLESHOOTING
+================================================================================
+
+Common Alarms and Warnings:
+
+Alarm 2: No mains
+- Check mains connection
+- Check fuses
+
+Alarm 7: DC overvoltage
+- Increase deceleration time
+- Enable DC brake function
+
+Alarm 14: Earth fault
+- Check motor cables
+- Check motor insulation
+
+Warning 8: DC undervoltage
+- Check mains supply
+- Check for voltage dips
+
+================================================================================
+6. SPECIFICATIONS
+================================================================================
+
+Environmental:
+- Operating temperature: -10 to +50°C (derating above 45°C)
+- Storage temperature: -25 to +65°C
+- Humidity: 5-95% RH (non-condensing)
+- Max altitude: 1000m (derating above)
+
+Electrical:
+- Input frequency: 50/60 Hz
+- Output frequency: 0.2-590 Hz
+- Switching frequency: 2-16 kHz
+- Efficiency: >97%
+
+Protection:
+- Motor thermal protection via ETR
+- Short circuit protection
+- Earth fault protection
+- Overload protection
+
+================================================================================
+For more information, visit www.danfoss.com/drives
+
+Document number: MG02A402
+Version: 1.0
+Date: 2024-01
+================================================================================

@@ -1,0 +1,545 @@
+/**
+ * Danfoss RAG Chat Widget Styles
+ *
+ * This file contains the core styles for the embeddable chat widget.
+ * Styles are also embedded in the JavaScript for standalone usage.
+ *
+ * Brand Colors:
+ * - Primary (Danfoss Red): #E2000F
+ * - Secondary: #333333
+ * - Background: #FFFFFF
+ * - Text: #1A1A1A
+ */
+
+:root {
+    --danfoss-primary: #E2000F;
+    --danfoss-secondary: #333333;
+    --danfoss-bg: #FFFFFF;
+    --danfoss-text: #1A1A1A;
+    --danfoss-border-radius: 12px;
+    --danfoss-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+}
+
+/* Widget Container */
+.danfoss-chat-widget {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--danfoss-text);
+}
+
+/* Floating Button */
+.danfoss-chat-button {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    background-color: var(--danfoss-primary);
+    border: none;
+    cursor: pointer;
+    box-shadow: var(--danfoss-shadow);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    z-index: 999998;
+}
+
+.danfoss-chat-button:hover {
+    transform: scale(1.05);
+    box-shadow: 0 6px 25px rgba(0, 0, 0, 0.2);
+}
+
+.danfoss-chat-button:active {
+    transform: scale(0.98);
+}
+
+.danfoss-chat-button svg {
+    width: 28px;
+    height: 28px;
+    fill: white;
+}
+
+/* Chat Window */
+.danfoss-chat-window {
+    position: fixed;
+    bottom: 90px;
+    right: 20px;
+    width: 380px;
+    height: 520px;
+    background: var(--danfoss-bg);
+    border-radius: var(--danfoss-border-radius);
+    box-shadow: var(--danfoss-shadow);
+    display: none;
+    flex-direction: column;
+    overflow: hidden;
+    z-index: 999999;
+    animation: danfoss-slide-up 0.3s ease;
+}
+
+.danfoss-chat-window.open {
+    display: flex;
+}
+
+@keyframes danfoss-slide-up {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Header */
+.danfoss-chat-header {
+    background: var(--danfoss-primary);
+    color: white;
+    padding: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+}
+
+.danfoss-chat-header-title {
+    font-weight: 600;
+    font-size: 16px;
+}
+
+.danfoss-chat-close {
+    background: none;
+    border: none;
+    color: white;
+    cursor: pointer;
+    padding: 4px;
+    font-size: 24px;
+    line-height: 1;
+    opacity: 0.8;
+    transition: opacity 0.2s;
+}
+
+.danfoss-chat-close:hover {
+    opacity: 1;
+}
+
+/* Messages Container */
+.danfoss-chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    background: #fafafa;
+}
+
+.danfoss-chat-messages::-webkit-scrollbar {
+    width: 6px;
+}
+
+.danfoss-chat-messages::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.danfoss-chat-messages::-webkit-scrollbar-thumb {
+    background: #ccc;
+    border-radius: 3px;
+}
+
+/* Message Bubbles */
+.danfoss-chat-message {
+    max-width: 85%;
+    padding: 10px 14px;
+    border-radius: 12px;
+    word-wrap: break-word;
+    animation: danfoss-message-appear 0.2s ease;
+}
+
+@keyframes danfoss-message-appear {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.danfoss-chat-message.user {
+    align-self: flex-end;
+    background: var(--danfoss-primary);
+    color: white;
+    border-bottom-right-radius: 4px;
+}
+
+.danfoss-chat-message.assistant {
+    align-self: flex-start;
+    background: white;
+    color: var(--danfoss-text);
+    border-bottom-left-radius: 4px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/* Confidence Badge */
+.danfoss-chat-confidence {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    margin-top: 6px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.05);
+}
+
+.danfoss-confidence-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+
+.danfoss-confidence-high {
+    background-color: #22c55e; /* Green */
+}
+
+.danfoss-confidence-medium {
+    background-color: #eab308; /* Yellow */
+}
+
+.danfoss-confidence-low {
+    background-color: #ef4444; /* Red */
+}
+
+/* Disclaimer */
+.danfoss-chat-disclaimer {
+    font-size: 11px;
+    color: #666;
+    margin-top: 8px;
+    padding: 8px 10px;
+    background: #fff3cd;
+    border-radius: 6px;
+    border-left: 3px solid #ffc107;
+}
+
+/* Input Area */
+.danfoss-chat-input-area {
+    padding: 12px;
+    border-top: 1px solid #e0e0e0;
+    display: flex;
+    gap: 8px;
+    background: white;
+    flex-shrink: 0;
+}
+
+.danfoss-chat-input {
+    flex: 1;
+    padding: 10px 14px;
+    border: 1px solid #e0e0e0;
+    border-radius: 20px;
+    outline: none;
+    font-size: 14px;
+    transition: border-color 0.2s;
+}
+
+.danfoss-chat-input:focus {
+    border-color: var(--danfoss-primary);
+}
+
+.danfoss-chat-input::placeholder {
+    color: #999;
+}
+
+.danfoss-chat-send {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: var(--danfoss-primary);
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s;
+    flex-shrink: 0;
+}
+
+.danfoss-chat-send:hover {
+    background: #c5000d;
+}
+
+.danfoss-chat-send:disabled {
+    background: #ccc;
+    cursor: not-allowed;
+}
+
+.danfoss-chat-send svg {
+    width: 18px;
+    height: 18px;
+    fill: white;
+}
+
+/* Typing Indicator */
+.danfoss-typing-indicator {
+    display: flex;
+    gap: 4px;
+    padding: 12px 14px !important;
+    background: white !important;
+}
+
+.danfoss-typing-dot {
+    width: 8px;
+    height: 8px;
+    background: #999;
+    border-radius: 50%;
+    animation: danfoss-typing 1.4s infinite ease-in-out;
+}
+
+.danfoss-typing-dot:nth-child(1) { animation-delay: 0s; }
+.danfoss-typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.danfoss-typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes danfoss-typing {
+    0%, 60%, 100% { transform: translateY(0); }
+    30% { transform: translateY(-4px); }
+}
+
+/* Welcome Message */
+.danfoss-chat-welcome {
+    text-align: center;
+    color: #666;
+    padding: 30px 20px;
+}
+
+.danfoss-chat-welcome h3 {
+    margin: 0 0 8px 0;
+    color: var(--danfoss-text);
+    font-size: 18px;
+}
+
+.danfoss-chat-welcome p {
+    margin: 0;
+    font-size: 14px;
+}
+
+/* Quick Action Buttons */
+.danfoss-quick-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 16px;
+    justify-content: center;
+}
+
+.danfoss-quick-action {
+    padding: 8px 14px;
+    border: 1px solid var(--danfoss-primary);
+    border-radius: 18px;
+    background: white;
+    color: var(--danfoss-primary);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s;
+}
+
+.danfoss-quick-action:hover {
+    background: var(--danfoss-primary);
+    color: white;
+}
+
+/* Image Upload Button */
+.danfoss-image-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: none;
+    border: 1px solid #e0e0e0;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #666;
+    transition: border-color 0.2s, color 0.2s;
+    flex-shrink: 0;
+}
+
+.danfoss-image-btn:hover {
+    border-color: var(--danfoss-primary);
+    color: var(--danfoss-primary);
+}
+
+/* Image Preview */
+.danfoss-image-preview {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-top: 1px solid #e0e0e0;
+    background: #f9f9f9;
+}
+
+.danfoss-image-preview-img {
+    width: 48px;
+    height: 48px;
+    object-fit: cover;
+    border-radius: 6px;
+    border: 1px solid #ddd;
+}
+
+.danfoss-image-preview-remove {
+    background: none;
+    border: none;
+    font-size: 20px;
+    color: #999;
+    cursor: pointer;
+    margin-left: auto;
+    padding: 0 4px;
+}
+
+.danfoss-image-preview-remove:hover {
+    color: var(--danfoss-primary);
+}
+
+/* Nameplate Confirmation Card */
+.danfoss-nameplate-card {
+    background: white !important;
+    border: 1px solid #e0e0e0;
+    border-radius: 12px;
+    padding: 14px !important;
+    max-width: 95% !important;
+}
+
+.danfoss-nameplate-title {
+    font-weight: 600;
+    font-size: 13px;
+    margin-bottom: 10px;
+    color: var(--danfoss-secondary);
+}
+
+.danfoss-nameplate-field {
+    margin-bottom: 8px;
+}
+
+.danfoss-nameplate-field label {
+    display: block;
+    font-size: 11px;
+    color: #666;
+    margin-bottom: 2px;
+}
+
+.danfoss-nameplate-input {
+    width: 100%;
+    padding: 6px 10px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 13px;
+    box-sizing: border-box;
+}
+
+.danfoss-nameplate-input:focus {
+    outline: none;
+    border-color: var(--danfoss-primary);
+}
+
+.danfoss-nameplate-specs {
+    font-size: 12px;
+    color: #555;
+    margin-bottom: 10px;
+    padding: 6px 8px;
+    background: #f5f5f5;
+    border-radius: 6px;
+}
+
+.danfoss-nameplate-spec {
+    margin-bottom: 2px;
+}
+
+.danfoss-nameplate-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.danfoss-nameplate-confirm {
+    flex: 1;
+    padding: 8px 12px;
+    background: var(--danfoss-primary);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.danfoss-nameplate-confirm:hover {
+    opacity: 0.9;
+}
+
+.danfoss-nameplate-cancel {
+    padding: 8px 12px;
+    background: none;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 12px;
+    color: #666;
+    cursor: pointer;
+}
+
+.danfoss-nameplate-cancel:hover {
+    border-color: #999;
+}
+
+/* Mobile Responsive */
+@media (max-width: 480px) {
+    .danfoss-chat-window {
+        width: calc(100% - 20px);
+        height: calc(100% - 100px);
+        right: 10px;
+        bottom: 80px;
+        max-height: 500px;
+    }
+
+    .danfoss-chat-button {
+        bottom: 15px;
+        right: 15px;
+        width: 56px;
+        height: 56px;
+    }
+
+    .danfoss-chat-message {
+        max-width: 90%;
+    }
+}
+
+/* Dark mode support (optional) */
+@media (prefers-color-scheme: dark) {
+    .danfoss-chat-widget.dark-mode {
+        --danfoss-bg: #1a1a1a;
+        --danfoss-text: #f0f0f0;
+    }
+
+    .danfoss-chat-widget.dark-mode .danfoss-chat-messages {
+        background: #242424;
+    }
+
+    .danfoss-chat-widget.dark-mode .danfoss-chat-message.assistant {
+        background: #333;
+        color: #f0f0f0;
+    }
+
+    .danfoss-chat-widget.dark-mode .danfoss-chat-input-area {
+        background: #1a1a1a;
+        border-color: #333;
+    }
+
+    .danfoss-chat-widget.dark-mode .danfoss-chat-input {
+        background: #333;
+        border-color: #444;
+        color: #f0f0f0;
+    }
+}
