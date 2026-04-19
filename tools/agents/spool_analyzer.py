@@ -7,7 +7,7 @@ Text analysis uses TIER_MID (Sonnet), vision uses TIER_HIGH (Opus).
 import logging
 
 from tools.llm_client import call_llm_json, TIER_MID, TIER_HIGH
-from tools.agents.base import render_pdf_pages, build_image_block, build_text_block
+from tools.agents.base import render_pdf_pages, build_image_block, build_text_block, get_skill_context
 from tools.parse_tools import compute_canonical_pattern, _deduplicate_spools
 
 logger = logging.getLogger(__name__)
@@ -15,9 +15,14 @@ logger = logging.getLogger(__name__)
 
 # ── Text analysis ────────────────────────────────────────────────────────
 
-_TEXT_SYSTEM_PROMPT = """You are an expert hydraulic engineer analysing a product user guide.
+_SPOOL_DOMAIN_CONTEXT = get_skill_context("spool", "unit", "failure")
+
+_TEXT_SYSTEM_PROMPT = (
+    (_SPOOL_DOMAIN_CONTEXT + "\n\n" if _SPOOL_DOMAIN_CONTEXT else "")
+    + """You are an expert hydraulic engineer analysing a product user guide.
 Identify EVERY spool type / valve function code mentioned in the document.
 Return a JSON array of spool objects. If no spool types found, return []."""
+)
 
 _TEXT_USER_PROMPT = """Your task: identify EVERY spool type / valve function code mentioned in this document from {company}.
 
@@ -127,10 +132,13 @@ def analyze_spool_text(text: str, company: str, few_shot_examples: list[dict] | 
 
 # ── Vision analysis ──────────────────────────────────────────────────────
 
-_VISION_SYSTEM_PROMPT = """You are an expert hydraulic engineer analysing pages from a product datasheet.
+_VISION_SYSTEM_PROMPT = (
+    (_SPOOL_DOMAIN_CONTEXT + "\n\n" if _SPOOL_DOMAIN_CONTEXT else "")
+    + """You are an expert hydraulic engineer analysing pages from a product datasheet.
 Extract ALL spool symbol diagrams and spool option table rows.
 Return valid JSON: {"spool_symbols": [...]}
 If NO spool symbols found, return: {"spool_symbols": []}"""
+)
 
 _VISION_PROMPT_V2 = """You are an expert hydraulic engineer analysing MULTIPLE PAGES from a product datasheet.
 

@@ -8,7 +8,7 @@ import logging
 
 from models import OrderingCodeDefinition
 from tools.llm_client import call_llm_json, TIER_HIGH
-from tools.agents.base import render_pdf_pages, build_image_block, build_text_block
+from tools.agents.base import render_pdf_pages, build_image_block, build_text_block, get_skill_context
 from tools.parse_tools import (
     _select_ordering_code_text,
     _parse_ordering_code_response,
@@ -19,9 +19,14 @@ logger = logging.getLogger(__name__)
 
 # ── System prompt ────────────────────────────────────────────────────────
 
-_SYSTEM_PROMPT = """You are an expert at reading hydraulic product datasheets and extracting ordering code breakdown tables.
+_DOMAIN_CONTEXT = get_skill_context("ordering", "spool", "unit", "failure")
+
+_SYSTEM_PROMPT = (
+    (_DOMAIN_CONTEXT + "\n\n" if _DOMAIN_CONTEXT else "")
+    + """You are an expert at reading hydraulic product datasheets and extracting ordering code breakdown tables.
 Return a JSON object: {"ordering_codes": [...]}
 If no ordering code tables found, return {"ordering_codes": []}"""
+)
 
 _USER_PROMPT_TEMPLATE = """You are an expert at reading hydraulic product datasheets and extracting ordering code breakdown tables.
 

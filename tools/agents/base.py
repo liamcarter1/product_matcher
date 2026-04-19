@@ -1,15 +1,78 @@
 """
 ProductMatchPro - Shared Agent Utilities
-Image encoding, text chunking, and content block builders used across all agents.
+Image encoding, text chunking, content block builders, and domain skill loading
+used across all agents.
 """
 
 import base64
 import logging
+from functools import lru_cache
 from pathlib import Path
 
 from tools.llm_client import get_provider
 
 logger = logging.getLogger(__name__)
+
+# ── Domain skill loading ────────────────────────────────────────────────
+
+_SKILL_PATH = Path(__file__).resolve().parents[2] / "skills" / "hydraulics_engineer.md"
+
+
+def _parse_skill_sections(text: str) -> dict[str, str]:
+    """Split the skill file on '## N.' headers into named sections."""
+    sections = {}
+    current_key = None
+    current_lines = []
+
+    for line in text.splitlines():
+        if line.startswith("## ") and len(line) > 3 and line[3:4].isdigit():
+            if current_key:
+                sections[current_key] = "\n".join(current_lines).strip()
+            header = line.split(".", 1)[1].strip() if "." in line else line[3:].strip()
+            current_key = header.lower().replace(" ", "_")
+            current_lines = [line]
+        elif current_key:
+            current_lines.append(line)
+
+    if current_key:
+        sections[current_key] = "\n".join(current_lines).strip()
+
+    return sections
+
+
+@lru_cache(maxsize=1)
+def _load_skill() -> dict[str, str]:
+    """Load and cache skill file sections. Returns empty dict on failure."""
+    if not _SKILL_PATH.exists():
+        logger.warning("Hydraulics skill file not found at %s", _SKILL_PATH)
+        return {}
+    try:
+        text = _SKILL_PATH.read_text(encoding="utf-8")
+        sections = _parse_skill_sections(text)
+        logger.info("Loaded hydraulics skill: %d sections", len(sections))
+        return sections
+    except Exception as e:
+        logger.error("Failed to load hydraulics skill: %s", e)
+        return {}
+
+
+def get_skill_context(*keys: str) -> str:
+    """Return concatenated skill sections matching key fragments.
+
+    Example: get_skill_context("spool", "unit", "failure")
+    returns sections whose names contain 'spool', 'unit', or 'failure'.
+    Returns empty string if skill file is missing.
+    """
+    sections = _load_skill()
+    if not sections:
+        return ""
+    matched = []
+    for section_key, section_text in sections.items():
+        for k in keys:
+            if k in section_key:
+                matched.append(section_text)
+                break
+    return "\n\n".join(matched)
 
 # PyMuPDF for PDF page rendering (optional)
 try:

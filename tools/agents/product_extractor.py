@@ -9,16 +9,21 @@ import logging
 
 from models import ExtractedProduct, UploadMetadata
 from tools.llm_client import call_llm_json, TIER_MID
-from tools.agents.base import chunk_text
+from tools.agents.base import chunk_text, get_skill_context
 
 logger = logging.getLogger(__name__)
 
 # ── System prompt ────────────────────────────────────────────────────────
 
-_SYSTEM_PROMPT = """You are an expert at extracting hydraulic product specifications from technical documents.
+_PRODUCT_DOMAIN_CONTEXT = get_skill_context("spec", "spool", "unit")
+
+_SYSTEM_PROMPT = (
+    (_PRODUCT_DOMAIN_CONTEXT + "\n\n" if _PRODUCT_DOMAIN_CONTEXT else "")
+    + """You are an expert at extracting hydraulic product specifications from technical documents.
 Extract ALL products mentioned in the provided text. Return a JSON object: {"products": [...]}.
 If no products found, return {"products": []}.
 Only include fields where you found actual data."""
+)
 
 _USER_PROMPT_TEMPLATE = """Extract ALL products from the following text. For each product, extract:
 - model_code: the full model/part number
