@@ -95,6 +95,35 @@ def _resolve_model(tier: str, vision: bool = False) -> str:
     return table.get(tier, table[TIER_MID])
 
 
+# ── System prompt helpers (prompt caching) ──────────────────────────────
+
+def _build_system_param(system: str, system_blocks: list | None) -> "str | list":
+    """Merge optional cached blocks with a plain system string for Anthropic.
+
+    Returns a list of content blocks (with cache_control) when system_blocks
+    is provided, or the plain system string when it is not. The plain system
+    string is always appended as the final (non-cached) block so the cached
+    prefix stays byte-identical across calls.
+    """
+    if not system_blocks:
+        return system
+    blocks = list(system_blocks)
+    if system:
+        blocks.append({"type": "text", "text": system})
+    return blocks
+
+
+def _build_openai_system(system: str, system_blocks: list | None) -> str:
+    """Flatten system_blocks + system string to a plain string for OpenAI.
+
+    OpenAI does not support cache_control; we concatenate all block texts.
+    """
+    if not system_blocks:
+        return system
+    prefix = "\n\n".join(b.get("text", "") for b in system_blocks if b.get("text"))
+    return (prefix + "\n\n" + system).strip() if prefix else system
+
+
 # ── Core LLM call functions ─────────────────────────────────────────────
 
 def call_llm(
@@ -107,6 +136,7 @@ def call_llm(
     retries: int = 3,
     backoff_base: float = 2.0,
     vision: bool = False,
+    system_blocks: list | None = None,
 ) -> str:
     """Make an LLM call with retry logic. Returns text response.
 
@@ -123,11 +153,13 @@ def call_llm(
     model = _resolve_model(tier, vision=vision)
 
     if LLM_PROVIDER == "anthropic":
-        return _call_anthropic(model, system, user_content,
+        api_system = _build_system_param(system, system_blocks)
+        return _call_anthropic(model, api_system, user_content,
                                max_tokens=max_tokens, temperature=temperature,
                                retries=retries, backoff_base=backoff_base)
     else:
-        return _call_openai(model, system, user_content,
+        api_system = _build_openai_system(system, system_blocks)
+        return _call_openai(model, api_system, user_content,
                             max_tokens=max_tokens, temperature=temperature,
                             retries=retries, backoff_base=backoff_base)
 
@@ -140,6 +172,7 @@ def call_llm_json(
     max_tokens: int = 4096,
     temperature: float = 0.1,
     vision: bool = False,
+    system_blocks: list | None = None,
 ) -> dict | list:
     """Call LLM and parse response as JSON.
 
@@ -150,15 +183,19 @@ def call_llm_json(
     model = _resolve_model(tier, vision=vision)
 
     if LLM_PROVIDER == "openai":
-        return _call_openai_json(model, system, user_content,
+        api_system = _build_openai_system(system, system_blocks)
+        return _call_openai_json(model, api_system, user_content,
                                  max_tokens=max_tokens, temperature=temperature)
 
-    # Anthropic path: no native JSON mode
+    # Anthropic path: no native JSON mode — append JSON instruction to the
+    # plain system string (not the cached blocks) so the cached prefix stays
+    # byte-identical across calls.
     enhanced_system = system + "\n\nReturn ONLY valid JSON. No explanation, no markdown code fences."
+    api_system = _build_system_param(enhanced_system, system_blocks)
     content_len = len(user_content) if isinstance(user_content, str) else f"{len(user_content)} blocks"
     print(f"[LLM] call_llm_json: model={model}, tier={tier}, max_tokens={max_tokens}, "
           f"content_len={content_len}, vision={vision}")
-    raw = _call_anthropic(model, enhanced_system, user_content,
+    raw = _call_anthropic(model, api_system, user_content,
                           max_tokens=max_tokens, temperature=temperature)
     print(f"[LLM] Response received: {len(raw)} chars")
     return _parse_json_response(raw, model, max_tokens)
@@ -173,6 +210,7 @@ def call_llm_tool(
     max_tokens: int = 8192,
     temperature: float = 0.1,
     vision: bool = False,
+    system_blocks: list | None = None,
 ) -> dict:
     """Call LLM with tool use for guaranteed structured output.
 
@@ -183,10 +221,11 @@ def call_llm_tool(
         # OpenAI fallback: just use JSON mode with the system prompt
         return call_llm_json(tier, system, user_content,
                              max_tokens=max_tokens, temperature=temperature,
-                             vision=vision)
+                             vision=vision, system_blocks=system_blocks)
 
     model = _resolve_model(tier, vision=vision)
     client = _get_anthropic()
+    api_system = _build_system_param(system, system_blocks)
 
     # Normalise user_content
     if isinstance(user_content, str):
@@ -197,7 +236,7 @@ def call_llm_tool(
     try:
         response = client.messages.create(
             model=model,
-            system=system,
+            system=api_system,
             messages=messages,
             tools=[tool_schema],
             tool_choice={"type": "tool", "name": tool_schema["name"]},
@@ -212,14 +251,14 @@ def call_llm_tool(
         logger.warning("Tool use failed (%s), falling back to JSON mode: %s", model, e)
         return call_llm_json(tier, system, user_content,
                              max_tokens=max_tokens, temperature=temperature,
-                             vision=vision)
+                             vision=vision, system_blocks=system_blocks)
 
 
 # ── Anthropic internals ──────────────────────────────────────────────────
 
 def _call_anthropic(
     model: str,
-    system: str,
+    system,  # str or list of content blocks (with optional cache_control)
     user_content,
     *,
     max_tokens: int = 4096,
@@ -227,7 +266,7 @@ def _call_anthropic(
     retries: int = 3,
     backoff_base: float = 2.0,
 ) -> str:
-    """Raw Anthropic API call with retry."""
+    """Raw Anthropic API call with retry. system may be a str or list of blocks."""
     import anthropic
 
     client = _get_anthropic()

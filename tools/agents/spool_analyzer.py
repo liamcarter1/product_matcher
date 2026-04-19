@@ -5,12 +5,29 @@ Text analysis uses TIER_MID (Sonnet), vision uses TIER_HIGH (Opus).
 """
 
 import logging
+from pathlib import Path
 
 from tools.llm_client import call_llm_json, TIER_MID, TIER_HIGH
 from tools.agents.base import render_pdf_pages, build_image_block, build_text_block
 from tools.parse_tools import compute_canonical_pattern, _deduplicate_spools
 
 logger = logging.getLogger(__name__)
+
+# ── Domain knowledge (prompt-cached) ────────────────────────────────────
+
+_SKILLS_FILE = Path(__file__).parent.parent.parent / "skills" / "hydraulics_engineer.md"
+
+
+def _load_skill() -> list | None:
+    try:
+        return [{"type": "text", "text": _SKILLS_FILE.read_text("utf-8"),
+                 "cache_control": {"type": "ephemeral"}}]
+    except FileNotFoundError:
+        logger.warning("skills/hydraulics_engineer.md not found — proceeding without domain knowledge")
+        return None
+
+
+_HYDRAULICS_SKILL_BLOCKS = _load_skill()
 
 
 # ── Text analysis ────────────────────────────────────────────────────────
@@ -87,6 +104,7 @@ def analyze_spool_text(text: str, company: str, few_shot_examples: list[dict] | 
             TIER_MID,
             _TEXT_SYSTEM_PROMPT,
             user_prompt,
+            system_blocks=_HYDRAULICS_SKILL_BLOCKS,
         )
 
         # Handle both {"spool_functions": [...]} and direct [...]
@@ -290,6 +308,7 @@ def analyze_spool_vision(
                 content,
                 vision=True,
                 max_tokens=max_tokens_per_batch,
+                system_blocks=_HYDRAULICS_SKILL_BLOCKS,
             )
             symbols = data.get("spool_symbols", []) if isinstance(data, dict) else []
 

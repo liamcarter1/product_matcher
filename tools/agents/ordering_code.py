@@ -5,6 +5,7 @@ Uses TIER_HIGH (Opus / GPT-4.1) — the most critical extraction task.
 """
 
 import logging
+from pathlib import Path
 
 from models import OrderingCodeDefinition
 from tools.llm_client import call_llm_json, TIER_HIGH
@@ -16,6 +17,22 @@ from tools.parse_tools import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ── Domain knowledge (prompt-cached) ────────────────────────────────────
+
+_SKILLS_FILE = Path(__file__).parent.parent.parent / "skills" / "hydraulics_engineer.md"
+
+
+def _load_skill() -> list | None:
+    try:
+        return [{"type": "text", "text": _SKILLS_FILE.read_text("utf-8"),
+                 "cache_control": {"type": "ephemeral"}}]
+    except FileNotFoundError:
+        logger.warning("skills/hydraulics_engineer.md not found — proceeding without domain knowledge")
+        return None
+
+
+_HYDRAULICS_SKILL_BLOCKS = _load_skill()
 
 # ── System prompt ────────────────────────────────────────────────────────
 
@@ -176,6 +193,7 @@ def extract_ordering_code_text(
             _SYSTEM_PROMPT,
             user_prompt,
             max_tokens=16384,
+            system_blocks=_HYDRAULICS_SKILL_BLOCKS,
         )
         raw_codes = data.get("ordering_codes", [])
         logger.info("Ordering code extraction: %d raw tables found", len(raw_codes))
@@ -257,6 +275,7 @@ def extract_ordering_code_vision(
             content,
             vision=True,
             max_tokens=16384,
+            system_blocks=_HYDRAULICS_SKILL_BLOCKS,
         )
         raw_codes = data.get("ordering_codes", [])
         logger.info("Ordering code vision extraction: %d raw tables found", len(raw_codes))

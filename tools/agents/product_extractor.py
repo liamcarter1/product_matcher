@@ -6,12 +6,29 @@ Uses TIER_MID (Sonnet / GPT-4.1-mini) for balanced quality and cost.
 
 import json
 import logging
+from pathlib import Path
 
 from models import ExtractedProduct, UploadMetadata
 from tools.llm_client import call_llm_json, TIER_MID
 from tools.agents.base import chunk_text
 
 logger = logging.getLogger(__name__)
+
+# ── Domain knowledge (prompt-cached) ────────────────────────────────────
+
+_SKILLS_FILE = Path(__file__).parent.parent.parent / "skills" / "hydraulics_engineer.md"
+
+
+def _load_skill() -> list | None:
+    try:
+        return [{"type": "text", "text": _SKILLS_FILE.read_text("utf-8"),
+                 "cache_control": {"type": "ephemeral"}}]
+    except FileNotFoundError:
+        logger.warning("skills/hydraulics_engineer.md not found — proceeding without domain knowledge")
+        return None
+
+
+_HYDRAULICS_SKILL_BLOCKS = _load_skill()
 
 # ── System prompt ────────────────────────────────────────────────────────
 
@@ -130,6 +147,7 @@ def _extract_batch(
             TIER_MID,
             _SYSTEM_PROMPT,
             user_prompt,
+            system_blocks=_HYDRAULICS_SKILL_BLOCKS,
         )
         items = data if isinstance(data, list) else data.get("products", [])
 
