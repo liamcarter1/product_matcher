@@ -1,39 +1,50 @@
 {
-  "version": "1.0",
-  "description": "Standard spool types for common hydraulic valve series. Loaded on first startup to eliminate cold-start problem and avoid unreliable vision extraction.",
+  "version": "1.1",
+  "description": "Standard spool types for common hydraulic valve series. Loaded on first startup to eliminate cold-start problem and avoid unreliable vision extraction. v1.1: corrected 6C/8C/33C/2AL descriptions, added topology + hand_build fields, added 22A/22AL/7C/31C/52C, removed 6CL. Convention: terminal 'L' suffix = spring-offset left-hand build.",
+  "schema_notes": {
+    "topology": "Valve port-position topology: '4/2 single-solenoid', '4/3 double-solenoid', or '4/2 double-solenoid'.",
+    "hand_build": "Solenoid mounting orientation: 'left', 'right', or 'symmetric' (4/3 double-solenoid valves are symmetric by default). 'L' suffix in spool_code indicates left-hand build.",
+    "canonical_pattern": "FAMILY|solenoid-a-energised|solenoid-b-energised. For 4/2 single-solenoid spools, the second action describes the energised position. Family is the matching key (BLOCKED/OPEN/TANDEM/FLOAT/REGEN/SELECTOR/ASYMMETRIC)."
+  },
   "seed_data": [
     {
       "series_prefix": "DG4V",
       "manufacturer": "Danfoss",
       "spool_code": "0A",
-      "description": "Open center, standard crossover",
-      "center_condition": "All ports open to tank",
+      "description": "P→A, B→T centre (4/2 single-solenoid, RH build)",
+      "center_condition": "P→A, B→T",
       "solenoid_a_function": "P to A, B to T",
       "solenoid_b_function": "P to B, A to T",
       "canonical_pattern": "OPEN|PA-BT|PB-AT",
+      "topology": "4/2 single-solenoid",
+      "hand_build": "right",
       "is_primary": true
     },
     {
       "series_prefix": "DG4V",
       "manufacturer": "Danfoss",
       "spool_code": "2A",
-      "description": "Closed center, standard crossover",
-      "center_condition": "All ports blocked",
+      "description": "P→A, B→T centre (4/2 single-solenoid, RH build); energised: P→B, A→T",
+      "center_condition": "P→A, B→T",
       "solenoid_a_function": "P to A, B to T",
       "solenoid_b_function": "P to B, A to T",
       "canonical_pattern": "BLOCKED|PA-BT|PB-AT",
+      "topology": "4/2 single-solenoid",
+      "hand_build": "right",
       "is_primary": true
     },
     {
       "series_prefix": "DG4V",
       "manufacturer": "Danfoss",
       "spool_code": "2AL",
-      "description": "Closed center, standard crossover with lapped spool",
-      "center_condition": "All ports blocked (lapped)",
+      "description": "Spring-offset 4/2 single-solenoid, left-hand build (mirror of 2A): P→B, A→T centre",
+      "center_condition": "P→B, A→T",
       "solenoid_a_function": "P to A, B to T",
       "solenoid_b_function": "P to B, A to T",
       "canonical_pattern": "BLOCKED|PA-BT|PB-AT",
-      "is_primary": false
+      "topology": "4/2 single-solenoid",
+      "hand_build": "left",
+      "is_primary": true
     },
     {
       "series_prefix": "DG4V",
@@ -44,62 +55,62 @@
       "solenoid_a_function": "P to A, B to T",
       "solenoid_b_function": "P to B, A to T",
       "canonical_pattern": "BLOCKED|PA-BT|PB-AT",
+      "topology": "4/3 double-solenoid",
+      "hand_build": "symmetric",
       "is_primary": false
     },
     {
       "series_prefix": "DG4V",
       "manufacturer": "Danfoss",
       "spool_code": "2C",
-      "description": "Closed center, no crossover in transition",
+      "description": "Closed center, no crossover in transition (all ports blocked)",
       "center_condition": "All ports blocked",
       "solenoid_a_function": "P to A, B to T",
       "solenoid_b_function": "P to B, A to T",
       "canonical_pattern": "BLOCKED|PA-BT|PB-AT",
+      "topology": "4/3 double-solenoid",
+      "hand_build": "symmetric",
       "is_primary": true
     },
     {
       "series_prefix": "DG4V",
       "manufacturer": "Danfoss",
       "spool_code": "0C",
-      "description": "Open center, no crossover in transition",
-      "center_condition": "All ports open to tank",
+      "description": "Open center: all four ports interconnected (P, A, B, T all open)",
+      "center_condition": "P, A, B, T all open and connected",
       "solenoid_a_function": "P to A, B to T",
       "solenoid_b_function": "P to B, A to T",
       "canonical_pattern": "OPEN|PA-BT|PB-AT",
+      "topology": "4/3 double-solenoid",
+      "hand_build": "symmetric",
       "is_primary": true
     },
     {
       "series_prefix": "DG4V",
       "manufacturer": "Danfoss",
       "spool_code": "6C",
-      "description": "Tandem center",
-      "center_condition": "P and T connected, A and B blocked",
+      "description": "Float (semi-open) center: P blocked, A→T, B→T (work ports vented to tank)",
+      "center_condition": "P blocked, A→T, B→T",
       "solenoid_a_function": "P to A, B to T",
       "solenoid_b_function": "P to B, A to T",
-      "canonical_pattern": "TANDEM|PA-BT|PB-AT",
+      "canonical_pattern": "FLOAT|PA-BT|PB-AT",
+      "topology": "4/3 double-solenoid",
+      "hand_build": "symmetric",
       "is_primary": true
-    },
-    {
-      "series_prefix": "DG4V",
-      "manufacturer": "Danfoss",
-      "spool_code": "6CL",
-      "description": "Tandem center with lapped spool",
-      "center_condition": "P and T connected, A and B blocked (lapped)",
-      "solenoid_a_function": "P to A, B to T",
-      "solenoid_b_function": "P to B, A to T",
-      "canonical_pattern": "TANDEM|PA-BT|PB-AT",
-      "is_primary": false
     },
     {
       "series_prefix": "DG4V",
       "manufacturer": "Danfoss",
       "spool_code": "H",
-      "description": "Float center",
+      "description": "Float center: A, B and T connected, P blocked",
       "center_condition": "A, B and T connected, P blocked",
       "solenoid_a_function": "P to A, B to T",
       "solenoid_b_function": "P to B, A to T",
       "canonical_pattern": "FLOAT|PA-BT|PB-AT",
-      "is_primary": true
+      "topology": "4/3 double-solenoid",
+      "hand_build": "symmetric",
+      "is_primary": true,
+      "note": "Danfoss H ≠ Rexroth H. Rexroth H = all four interconnected (maps to Danfoss 0C). Common false-friend code."
     },
     {
       "series_prefix": "DG4V",
@@ -110,18 +121,22 @@
       "solenoid_a_function": "P to A, B to T",
       "solenoid_b_function": "P to B, A to T",
       "canonical_pattern": "REGEN|PA-BT|PB-AT",
+      "topology": "4/3 double-solenoid",
+      "hand_build": "symmetric",
       "is_primary": false
     },
     {
       "series_prefix": "DG4V",
       "manufacturer": "Danfoss",
       "spool_code": "8C",
-      "description": "Semi-open center",
-      "center_condition": "P blocked, A, B and T connected",
+      "description": "Tandem center: P→T connected, A and B blocked (pump unloaded, work ports held)",
+      "center_condition": "P→T, A and B blocked",
       "solenoid_a_function": "P to A, B to T",
       "solenoid_b_function": "P to B, A to T",
-      "canonical_pattern": "FLOAT|PA-BT|PB-AT",
-      "is_primary": false
+      "canonical_pattern": "TANDEM|PA-BT|PB-AT",
+      "topology": "4/3 double-solenoid",
+      "hand_build": "symmetric",
+      "is_primary": true
     },
     {
       "series_prefix": "DG4V",
@@ -132,17 +147,21 @@
       "solenoid_a_function": "P to A, B to T",
       "solenoid_b_function": "P to B, A to T",
       "canonical_pattern": "OPEN|PA-BT|PB-AT",
+      "topology": "4/3 double-solenoid",
+      "hand_build": "symmetric",
       "is_primary": false
     },
     {
       "series_prefix": "DG4V",
       "manufacturer": "Danfoss",
       "spool_code": "33C",
-      "description": "Partial crossover center",
-      "center_condition": "P to T, A and B blocked",
+      "description": "Float center with metered transition: P blocked, A→T and B→T with metering on transition",
+      "center_condition": "P blocked, A→T, B→T (metered)",
       "solenoid_a_function": "P to A, B to T",
       "solenoid_b_function": "P to B, A to T",
-      "canonical_pattern": "TANDEM|PA-BT|PB-AT",
+      "canonical_pattern": "FLOAT|PA-BT|PB-AT",
+      "topology": "4/3 double-solenoid",
+      "hand_build": "symmetric",
       "is_primary": false
     },
     {
@@ -154,6 +173,8 @@
       "solenoid_a_function": "P to A, B to T",
       "solenoid_b_function": "P to B, A to T",
       "canonical_pattern": "OPEN|PA-BT|PB-AT",
+      "topology": "4/3 double-solenoid",
+      "hand_build": "symmetric",
       "is_primary": false
     },
     {
@@ -165,6 +186,8 @@
       "solenoid_a_function": "P to A, B to T",
       "solenoid_b_function": "P to B, A to T",
       "canonical_pattern": "BLOCKED|PA-BT|PB-AT",
+      "topology": "4/3 double-solenoid",
+      "hand_build": "symmetric",
       "is_primary": false
     },
     {
@@ -176,6 +199,8 @@
       "solenoid_a_function": "P to A, B to T",
       "solenoid_b_function": "P to B, A to T (metered)",
       "canonical_pattern": "BLOCKED|PA-BT|PB-AT",
+      "topology": "4/3 double-solenoid",
+      "hand_build": "symmetric",
       "is_primary": false
     },
     {
@@ -187,6 +212,73 @@
       "solenoid_a_function": "P to A, B to T",
       "solenoid_b_function": "P to B, A to T (metered)",
       "canonical_pattern": "TANDEM|PA-BT|PB-AT",
+      "topology": "4/3 double-solenoid",
+      "hand_build": "symmetric",
+      "is_primary": false
+    },
+    {
+      "series_prefix": "DG4V",
+      "manufacturer": "Danfoss",
+      "spool_code": "22A",
+      "description": "Selector spool (4/2 single-solenoid, RH build): P→A in centre, B blocked, T isolated; energised: P→B, A blocked, T isolated. T port not used — effectively a 3-way function in 4-way body.",
+      "center_condition": "P→A, B blocked, T isolated",
+      "solenoid_a_function": "P to A, B blocked, T isolated",
+      "solenoid_b_function": "P to B, A blocked, T isolated",
+      "canonical_pattern": "SELECTOR|PA-BB-TI|PB-AB-TI",
+      "topology": "4/2 single-solenoid",
+      "hand_build": "right",
+      "is_primary": false
+    },
+    {
+      "series_prefix": "DG4V",
+      "manufacturer": "Danfoss",
+      "spool_code": "22AL",
+      "description": "Selector spool, left-hand build (mirror of 22A): P→B in centre, A blocked, T isolated; energised: P→A, B blocked, T isolated.",
+      "center_condition": "P→B, A blocked, T isolated",
+      "solenoid_a_function": "P to A, B blocked, T isolated",
+      "solenoid_b_function": "P to B, A blocked, T isolated",
+      "canonical_pattern": "SELECTOR|PA-BB-TI|PB-AB-TI",
+      "topology": "4/2 single-solenoid",
+      "hand_build": "left",
+      "is_primary": false
+    },
+    {
+      "series_prefix": "DG4V",
+      "manufacturer": "Danfoss",
+      "spool_code": "7C",
+      "description": "Regenerative center: P→A and P→B linked in centre, T blocked",
+      "center_condition": "P→A, P→B linked, T blocked",
+      "solenoid_a_function": "P to A, B to T",
+      "solenoid_b_function": "P to B, A to T",
+      "canonical_pattern": "REGEN|PA-BT|PB-AT",
+      "topology": "4/3 double-solenoid",
+      "hand_build": "symmetric",
+      "is_primary": false
+    },
+    {
+      "series_prefix": "DG4V",
+      "manufacturer": "Danfoss",
+      "spool_code": "31C",
+      "description": "Asymmetric drain-B centre: P blocked, A blocked, B→T (transition behaviour distinguishes from Rexroth U).",
+      "center_condition": "P blocked, A blocked, B→T",
+      "solenoid_a_function": "P to A, B to T",
+      "solenoid_b_function": "P to B, A to T",
+      "canonical_pattern": "ASYMMETRIC|PA-BT|PB-AT",
+      "topology": "4/3 double-solenoid",
+      "hand_build": "symmetric",
+      "is_primary": false
+    },
+    {
+      "series_prefix": "DG4V",
+      "manufacturer": "Danfoss",
+      "spool_code": "52C",
+      "description": "Asymmetric centre with regen-on-extend: all ports blocked in centre; sol-A energised normal (P→A, B→T); sol-B energised: P→A linked B, T blocked (regen mode for cylinder extension).",
+      "center_condition": "All ports blocked",
+      "solenoid_a_function": "P to A, B to T",
+      "solenoid_b_function": "P to A linked B, T blocked",
+      "canonical_pattern": "ASYMMETRIC|PA-BT|PA-LB-TB",
+      "topology": "4/3 double-solenoid",
+      "hand_build": "symmetric",
       "is_primary": false
     }
   ]
