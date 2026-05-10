@@ -48,7 +48,7 @@ This means we cannot confidently recommend a drop-in replacement. The closest op
 
 {partial_matches}
 
-Contact your Danfoss sales representative:
+Contact your {my_company} sales representative:
 {contact_info}"""
 
 CLARIFICATION_PROMPT = """I found multiple products matching "{query}". Could you please clarify which one you're looking for?

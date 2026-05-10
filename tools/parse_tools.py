@@ -11,16 +11,9 @@ import logging
 from pathlib import Path
 from typing import Optional
 import pdfplumber
-from openai import OpenAI
-from dotenv import load_dotenv
 import json
 
 logger = logging.getLogger(__name__)
-
-# Model used for structured extraction tasks (ordering codes, spool analysis, product extraction).
-# GPT-4.1-mini has significantly better instruction-following than GPT-4o-mini,
-# critical for correctly mapping ordering code segments to named fields.
-EXTRACTION_MODEL = "gpt-4.1-mini"
 
 # PyMuPDF (fitz) for high-quality text extraction — optional fallback to pypdf
 try:
@@ -34,17 +27,7 @@ from models import (
     ExtractedProduct, HydraulicProduct, UploadMetadata,
     OrderingCodeSegment, OrderingCodeDefinition,
 )
-
-load_dotenv(override=True)
-
-_client = None
-
-
-def _get_client() -> OpenAI:
-    global _client
-    if _client is None:
-        _client = OpenAI()
-    return _client
+from tools.llm_client import call_llm_json, TIER_MID, TIER_HIGH
 
 # Common header patterns in hydraulic catalogues
 HEADER_MAPPINGS = {
@@ -415,14 +398,13 @@ Text:
 {text}"""
 
     try:
-        response = _get_client().chat.completions.create(
-            model=EXTRACTION_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
+        data = call_llm_json(
+            TIER_MID,
+            "You are an expert at extracting hydraulic product data from technical documents.",
+            prompt,
+            max_tokens=8192,
             temperature=0.1,
         )
-        content = response.choices[0].message.content
-        data = json.loads(content)
         items = data if isinstance(data, list) else data.get("products", [])
 
         products = []
@@ -492,14 +474,13 @@ Text:
 {text[:8000]}"""
 
     try:
-        response = _get_client().chat.completions.create(
-            model=EXTRACTION_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
+        data = call_llm_json(
+            TIER_MID,
+            "You are an expert at extracting hydraulic product model code patterns.",
+            prompt,
+            max_tokens=4096,
             temperature=0.1,
         )
-        content = response.choices[0].message.content
-        data = json.loads(content)
         patterns = data if isinstance(data, list) else data.get("patterns", [])
         return patterns
     except Exception as e:
@@ -554,7 +535,7 @@ _VALID_SPEC_FIELDS = {
     "subcategory",
 }
 
-MAX_COMBINATIONS = 10000
+MAX_COMBINATIONS = 500
 
 # Section header patterns used for smart text selection
 _ORDERING_CODE_HEADERS = re.compile(
@@ -778,15 +759,14 @@ Also include any ADDITIONAL spool types you find in the document that are NOT in
     prompt += f"\nText:\n{selected_text}"
 
     try:
-        response = _get_client().chat.completions.create(
-            model=EXTRACTION_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
+        data = call_llm_json(
+            TIER_HIGH,
+            "You are an expert at extracting hydraulic product ordering code structures.",
+            prompt,
+            max_tokens=8192,
             temperature=0.1,
         )
-        content = response.choices[0].message.content
-        logger.info("Ordering code LLM response (first 2000 chars): %s", content[:2000])
-        data = json.loads(content)
+        logger.info("Ordering code LLM response received")
         raw_codes = data.get("ordering_codes", [])
 
         return _parse_ordering_code_response(raw_codes, company, category)
@@ -1126,9 +1106,6 @@ def analyze_spool_functions(text: str, company: str) -> list[dict]:
         spool_code, center_condition, solenoid_a_function, solenoid_b_function,
         description, canonical_pattern
     """
-    load_dotenv()
-    client = OpenAI()
-
     # Truncate to avoid token limits while keeping enough context
     max_chars = 80_000
     if len(text) > max_chars:
@@ -1188,15 +1165,13 @@ DOCUMENT TEXT:
 {text}"""
 
     try:
-        response = client.chat.completions.create(
-            model=EXTRACTION_MODEL,
-            messages=[{"role": "user", "content": prompt}],
+        parsed = call_llm_json(
+            TIER_MID,
+            "You are an expert hydraulic engineer analysing spool function data.",
+            prompt,
+            max_tokens=4096,
             temperature=0.1,
-            response_format={"type": "json_object"},
         )
-
-        raw = response.choices[0].message.content.strip()
-        parsed = json.loads(raw)
 
         # Handle both {"spool_functions": [...]} and direct [...]
         if isinstance(parsed, dict):
@@ -1236,8 +1211,6 @@ DOCUMENT TEXT:
 # ---------------------------------------------------------------------------
 # Step 6: Vision-based spool symbol extraction from PDF pages
 # ---------------------------------------------------------------------------
-
-SPOOL_VISION_MODEL = "gpt-4o"
 
 _SPOOL_VISION_PROMPT = """You are an expert hydraulic engineer analysing a page from a product datasheet.
 
@@ -1502,16 +1475,14 @@ def extract_spool_symbols_from_pdf_v2(
         )
 
         try:
-            response = _get_client().chat.completions.create(
-                model=SPOOL_VISION_MODEL,
-                messages=[{"role": "user", "content": message_content}],
-                response_format={"type": "json_object"},
+            data = call_llm_json(
+                TIER_HIGH,
+                "You are an expert hydraulic engineer analysing spool symbol diagrams.",
+                message_content,
+                vision=True,
                 max_tokens=max_tokens_per_batch,
                 temperature=0.1,
             )
-
-            content = response.choices[0].message.content.strip()
-            data = json.loads(content)
             symbols = data.get("spool_symbols", [])
 
             batch_codes = []
@@ -2322,18 +2293,15 @@ spool types visible in the diagram that are NOT in this list."""
         })
 
     try:
-        response = _get_client().chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": content}],
-            response_format={"type": "json_object"},
+        data = call_llm_json(
+            TIER_HIGH,
+            "You are an expert at extracting hydraulic product ordering code structures from diagrams.",
+            content,
+            vision=True,
             max_tokens=16384,
             temperature=0.1,
         )
-
-        raw_content = response.choices[0].message.content
-        logger.info("Vision ordering code response length: %d chars (first 2000): %s",
-                     len(raw_content), raw_content[:2000])
-        data = json.loads(raw_content)
+        logger.info("Vision ordering code response received")
         raw_codes = data.get("ordering_codes", [])
 
         definitions = _parse_ordering_code_response(raw_codes, company, category)
@@ -2395,15 +2363,14 @@ Text:
 {text[:40000]}"""
 
     try:
-        response = _get_client().chat.completions.create(
-            model=EXTRACTION_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
+        data = call_llm_json(
+            TIER_MID,
+            "You are an expert at extracting hydraulic product cross-reference data.",
+            prompt,
+            max_tokens=8192,
             temperature=0.1,
         )
-        content = response.choices[0].message.content
-        logger.info("Cross-reference LLM response (first 2000 chars): %s", content[:2000])
-        data = json.loads(content)
+        logger.info("Cross-reference LLM response received")
         refs = data.get("cross_references", [])
 
         # Validate each entry has the required fields

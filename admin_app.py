@@ -95,9 +95,10 @@ def _validate_pdf(file_path: str) -> str | None:
 def _sanitize_error(e: Exception) -> str:
     """Return a safe error message without leaking internals."""
     error_str = str(e)
-    # Strip file paths and sensitive info
-    if "OPENAI_API_KEY" in error_str or "api_key" in error_str.lower():
-        return "API configuration error. Check your OpenAI API key."
+    # Strip API key references — covers both OpenAI and Anthropic SDK error messages
+    if any(k in error_str for k in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY")) or \
+       any(k in error_str.lower() for k in ("api_key", "api-key", "apikey")):
+        return "API configuration error. Check your API key settings."
     if len(error_str) > 200:
         error_str = error_str[:200] + "..."
     return error_str
@@ -1192,7 +1193,7 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
             def _seed_and_refresh():
                 msg, table = seed_standard_spools()
                 coverage = get_reference_coverage_summary()
-                return msg, table, coverage, gr.update(visible=True)
+                return msg, table, coverage, gr.Textbox(visible=True)
 
             spool_seed_btn.click(
                 _seed_and_refresh,
@@ -1396,7 +1397,13 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
                     import tempfile
 
                     pdf_path = pdf_file.name if hasattr(pdf_file, 'name') else str(pdf_file)
-                    logger.info(f"Teaching Mode: loading PDF from {pdf_path}")
+
+                    # Validate PDF before opening
+                    validation_error = _validate_pdf(Path(pdf_path))
+                    if validation_error:
+                        return validation_error, [], [], []
+
+                    logger.info("Teaching Mode: loading PDF")
 
                     try:
                         import fitz
@@ -1429,8 +1436,8 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
                     status = f"Rendered {len(rendered)} pages from {os.path.basename(pdf_path)}."
                     return status, gallery_images, page_types_data, rendered
                 except Exception as e:
-                    logger.error(f"Teaching Mode load_reference_pdf error: {e}", exc_info=True)
-                    return f"Error loading PDF: {e}", [], [], []
+                    logger.error("Teaching Mode load_reference_pdf error: %s", e, exc_info=True)
+                    return f"Error loading PDF: {_sanitize_error(e)}", [], [], []
 
             def run_teaching_extraction(
                 rendered_pages, page_classifications, manufacturer, series, pdf_file

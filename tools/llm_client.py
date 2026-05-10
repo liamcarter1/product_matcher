@@ -217,6 +217,26 @@ def call_llm_tool(
 
 # ── Anthropic internals ──────────────────────────────────────────────────
 
+def _normalize_for_anthropic(content_list: list) -> list:
+    """Convert OpenAI-format image_url blocks to Anthropic image/source format."""
+    result = []
+    for block in content_list:
+        if isinstance(block, dict) and block.get("type") == "image_url":
+            url = block["image_url"]["url"]
+            if url.startswith("data:"):
+                media_type, b64_data = url.split(",", 1)
+                media_type = media_type.split(":")[1].split(";")[0]
+                result.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": media_type, "data": b64_data},
+                })
+            else:
+                result.append({"type": "image", "source": {"type": "url", "url": url}})
+        else:
+            result.append(block)
+    return result
+
+
 def _call_anthropic(
     model: str,
     system: str,
@@ -234,7 +254,8 @@ def _call_anthropic(
     if isinstance(user_content, str):
         messages = [{"role": "user", "content": user_content}]
     else:
-        messages = [{"role": "user", "content": user_content}]
+        # Normalize OpenAI-format image_url blocks to Anthropic format
+        messages = [{"role": "user", "content": _normalize_for_anthropic(user_content)}]
 
     last_error = None
     for attempt in range(retries):
@@ -248,6 +269,8 @@ def _call_anthropic(
             )
             return response.content[0].text
         except anthropic.RateLimitError as e:
+            if attempt == retries - 1:
+                raise  # preserve typed exception on final attempt
             wait = backoff_base ** attempt
             logger.warning("Anthropic rate-limited, waiting %.1fs (attempt %d/%d)",
                            wait, attempt + 1, retries)
@@ -348,17 +371,20 @@ def _call_openai_json(
 
 def _strip_markdown_fences(text: str) -> str:
     """Remove markdown code fences (```json ... ```) from response."""
+    import re
     stripped = text.strip()
-    if stripped.startswith("```"):
-        lines = stripped.split("\n")
-        # Remove first line (```json) and last line (```)
-        filtered = []
-        for line in lines:
-            if line.strip().startswith("```"):
-                continue
-            filtered.append(line)
-        stripped = "\n".join(filtered)
-    return stripped.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    first_newline = stripped.find("\n")
+    if first_newline == -1:
+        # Single-line fence: ```json{...}``` — strip opening tag and closing ```
+        content = re.sub(r'^```[a-zA-Z]*', '', stripped)
+        content = re.sub(r'```$', '', content)
+        return content.strip()
+    # Multi-line: skip the opening ```lang line and closing ``` line
+    lines = stripped.split("\n")
+    filtered = [line for line in lines[1:] if not line.strip().startswith("```")]
+    return "\n".join(filtered).strip()
 
 
 def _parse_json_response(raw: str, model: str, max_tokens: int) -> dict | list:
@@ -387,12 +413,20 @@ def _parse_json_response(raw: str, model: str, max_tokens: int) -> dict | list:
             "Fix it and return ONLY valid JSON, nothing else:\n\n"
             + raw[:60000]
         )
-        fixed_raw = _call_anthropic(
-            model,
-            "Return ONLY valid JSON. No explanation.",
-            fix_prompt,
-            max_tokens=max_tokens,
-        )
+        if LLM_PROVIDER == "anthropic":
+            fixed_raw = _call_anthropic(
+                model,
+                "Return ONLY valid JSON. No explanation.",
+                fix_prompt,
+                max_tokens=max_tokens,
+            )
+        else:
+            fixed_raw = _call_openai(
+                model,
+                "Return ONLY valid JSON. No explanation.",
+                fix_prompt,
+                max_tokens=max_tokens,
+            )
         fixed = _strip_markdown_fences(fixed_raw)
         return json.loads(fixed)
 

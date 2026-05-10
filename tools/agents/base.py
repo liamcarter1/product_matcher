@@ -178,7 +178,10 @@ def chunk_text(
     while start < len(text):
         end = start + chunk_size
         chunks.append(text[start:end])
-        start = end - overlap
+        next_start = end - overlap
+        if next_start <= start:  # guard against infinite loop when overlap >= chunk_size
+            break
+        start = next_start
         if start >= len(text):
             break
     return chunks

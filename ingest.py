@@ -684,12 +684,13 @@ class IngestionPipeline:
         spool_seg.options = [opt for opt in original_options
                              if opt.get("code", "").upper() in missing_codes]
 
-        new_products = generate_products_from_ordering_code(definition, metadata)
-        for p in new_products:
-            p.specs["_spool_source"] = "reference_gapfill"
-
-        # Restore full options list
-        spool_seg.options = original_options
+        try:
+            new_products = generate_products_from_ordering_code(definition, metadata)
+            for p in new_products:
+                p.specs["_spool_source"] = "reference_gapfill"
+        finally:
+            # Always restore, even if generation raises
+            spool_seg.options = original_options
 
         if new_products:
             extracted_products.extend(new_products)

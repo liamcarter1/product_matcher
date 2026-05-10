@@ -205,7 +205,7 @@ class VectorCollection:
 
         results = []
         for idx in top_indices:
-            if scores[idx] > 0:
+            if valid_mask[idx]:  # include result if it passed the filter, even if score == 0.0
                 results.append((
                     self.ids[idx],
                     self.documents[idx],
@@ -381,13 +381,18 @@ class VectorStore:
         if len(scored) > 1:
             max_s = max(s for _, s in scored)
             min_s = min(s for _, s in scored)
-            rng = max_s - min_s if max_s != min_s else 1.0
+            score_range = max_s - min_s if max_s != min_s else None
         else:
-            min_s, rng = 0.0, 1.0
+            max_s = scored[0][1] if scored else 0.0
+            min_s, score_range = 0.0, None
 
         output = []
         for (doc_id, _, _, _), raw_score in scored[:rerank_top_k]:
-            normalized = (raw_score - min_s) / rng
+            if score_range is not None:
+                normalized = (raw_score - min_s) / score_range
+            else:
+                # All scores identical — clamp the raw score directly to [0, 1]
+                normalized = max_s
             # Clamp to [0.0, 1.0] — cross-encoder scores can go negative
             normalized = max(0.0, min(1.0, float(normalized)))
             output.append((doc_id, normalized))

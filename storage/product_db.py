@@ -8,6 +8,7 @@ import sqlite3
 import json
 import logging
 import uuid
+import hashlib
 import threading
 from pathlib import Path
 from typing import Optional
@@ -484,13 +485,16 @@ class ProductDB:
     ):
         with self._lock:
             cursor = self.conn.cursor()
+            # Use a deterministic ID so INSERT OR REPLACE deduplicates on the same
+            # competitor_code rather than always inserting a fresh row.
+            stable_id = hashlib.md5(competitor_code.upper().strip().encode()).hexdigest()
             cursor.execute("""
                 INSERT OR REPLACE INTO confirmed_equivalents
                 (id, competitor_model_code, competitor_company,
                  my_company_model_code, confirmed_by, confidence_override, notes)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
-                str(uuid.uuid4()), competitor_code, competitor_company,
+                stable_id, competitor_code, competitor_company,
                 my_company_code, confirmed_by, confidence_override, notes,
             ))
             self.conn.commit()
