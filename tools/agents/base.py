@@ -6,6 +6,7 @@ used across all agents.
 
 import base64
 import logging
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -15,7 +16,8 @@ logger = logging.getLogger(__name__)
 
 # ── Domain skill loading ────────────────────────────────────────────────
 
-_SKILL_PATH = Path(__file__).resolve().parents[2] / "skills" / "hydraulics_engineer.md"
+_SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
+_SKILL_PATH = _SKILLS_DIR / "hydraulics_engineer.md"  # kept for backward compat
 
 
 def _parse_skill_sections(text: str) -> dict[str, str]:
@@ -40,28 +42,45 @@ def _parse_skill_sections(text: str) -> dict[str, str]:
     return sections
 
 
-@lru_cache(maxsize=1)
-def _load_skill() -> dict[str, str]:
-    """Load and cache skill file sections. Returns empty dict on failure."""
-    if not _SKILL_PATH.exists():
-        logger.warning("Hydraulics skill file not found at %s", _SKILL_PATH)
+@lru_cache(maxsize=16)
+def _load_skill_file(filename: str) -> dict[str, str]:
+    """Load and cache a skill file by filename from the skills/ directory."""
+    path = _SKILLS_DIR / filename
+    if not path.exists():
         return {}
     try:
-        text = _SKILL_PATH.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
         sections = _parse_skill_sections(text)
-        logger.info("Loaded hydraulics skill: %d sections", len(sections))
+        logger.info("Loaded skill file '%s': %d sections", filename, len(sections))
         return sections
     except Exception as e:
-        logger.error("Failed to load hydraulics skill: %s", e)
+        logger.error("Failed to load skill file '%s': %s", filename, e)
         return {}
+
+
+@lru_cache(maxsize=1)
+def _load_skill() -> dict[str, str]:
+    """Backward-compatible loader for hydraulics_engineer.md."""
+    return _load_skill_file("hydraulics_engineer.md")
+
+
+def _manufacturer_to_filename(manufacturer: str) -> str:
+    """Convert a manufacturer name to its skill filename.
+
+    Examples:
+        "Bosch Rexroth"      → "bosch_rexroth.md"
+        "Parker"             → "parker.md"
+        "Vickers by Danfoss" → "vickers_by_danfoss.md"
+    """
+    slug = re.sub(r'[^a-z0-9]+', '_', manufacturer.lower()).strip('_')
+    return f"{slug}.md"
 
 
 def get_skill_context(*keys: str) -> str:
     """Return concatenated skill sections matching key fragments.
 
+    Searches hydraulics_engineer.md (universal knowledge).
     Example: get_skill_context("spool", "unit", "failure")
-    returns sections whose names contain 'spool', 'unit', or 'failure'.
-    Returns empty string if skill file is missing.
     """
     sections = _load_skill()
     if not sections:
@@ -73,6 +92,25 @@ def get_skill_context(*keys: str) -> str:
                 matched.append(section_text)
                 break
     return "\n\n".join(matched)
+
+
+def get_manufacturer_context(manufacturer: str) -> str:
+    """Return all content from a manufacturer-specific skill file.
+
+    Looks for skills/{manufacturer_slug}.md. Returns an empty string if
+    no file exists for this manufacturer — agents degrade gracefully.
+
+    Usage in agent call functions (NOT at module level, since manufacturer
+    is only known at PDF-processing time):
+
+        mfr_ctx = get_manufacturer_context(company)
+        system_prompt = (mfr_ctx + "\\n\\n" if mfr_ctx else "") + _SYSTEM_PROMPT
+    """
+    filename = _manufacturer_to_filename(manufacturer)
+    sections = _load_skill_file(filename)
+    if not sections:
+        return ""
+    return "\n\n".join(sections.values())
 
 # PyMuPDF for PDF page rendering (optional)
 try:

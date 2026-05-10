@@ -8,7 +8,7 @@ import logging
 
 from models import OrderingCodeDefinition
 from tools.llm_client import call_llm_json, TIER_HIGH
-from tools.agents.base import render_pdf_pages, build_image_block, build_text_block, get_skill_context
+from tools.agents.base import render_pdf_pages, build_image_block, build_text_block, get_skill_context, get_manufacturer_context
 from tools.parse_tools import (
     _select_ordering_code_text,
     _parse_ordering_code_response,
@@ -207,10 +207,15 @@ def extract_ordering_code_text(
         text=selected_text,
     )
 
+    # Prepend manufacturer-specific skill context (loaded at call time — company is
+    # only known when a PDF is being processed, not at module import time)
+    mfr_ctx = get_manufacturer_context(company)
+    system_prompt = (mfr_ctx + "\n\n" if mfr_ctx else "") + _SYSTEM_PROMPT
+
     try:
         data = call_llm_json(
             TIER_HIGH,
-            _SYSTEM_PROMPT,
+            system_prompt,
             user_prompt,
             max_tokens=16384,
         )
@@ -287,10 +292,13 @@ def extract_ordering_code_vision(
     for _, img_b64 in rendered:
         content.append(build_image_block(img_b64, "image/png"))
 
+    mfr_ctx = get_manufacturer_context(company)
+    system_prompt = (mfr_ctx + "\n\n" if mfr_ctx else "") + _SYSTEM_PROMPT
+
     try:
         data = call_llm_json(
             TIER_HIGH,
-            _SYSTEM_PROMPT,
+            system_prompt,
             content,
             vision=True,
             max_tokens=16384,
