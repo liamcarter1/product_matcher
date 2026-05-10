@@ -746,8 +746,9 @@ WRONG:     "{{01}}{{02}}{{03}}({{04}})-{{05}}-{{06}}-{{07}}"
 
 DANFOSS DG4V ORDERING CODE — MANUFACTURER-SPECIFIC RULES:
 - Danfoss DG4V: position after spool_type = "M" — FIXED, is_fixed=true, single option code="M"
-- Vickers/Eaton DG4V: position after spool = spring-return type (C/A/D). DO NOT apply Vickers C/A/D
-  logic to Danfoss-branded DG4V guides.
+- Vickers by Danfoss DG4V: position after spool = spring-return type (C/A/D). DO NOT apply Vickers
+  C/A/D logic to Danfoss-branded DG4V guides.
+  (Note: "Eaton" hydraulics = now "Vickers by Danfoss" — acquired 2021. Same product line.)
 - In Danfoss guides, LH build is the terminal "L" suffix on the spool code itself (e.g. "2AL"),
   NOT a separate segment. There is no standalone "A", "B", or "D" segment after the spool type.
 - Example correct Danfoss code: DG4V-3-2C-M-U-H7-60 (spool=2C, M=fixed, U=connector, H7=24VDC, 60=design)
@@ -2216,7 +2217,7 @@ Each row typically shows a {source_company} model code prefix alongside the comp
 Extract ALL series-level cross-reference mappings from the text below. For each mapping, provide:
 - "my_company_series": the {source_company}/Vickers/Danfoss series prefix (e.g. "KFDG4V-3", "DG4V-3", "KDG4V-3")
 - "competitor_series": the competitor's equivalent series prefix (e.g. "D1FW", "4WREE", "A10VSO")
-- "competitor_company": the competitor manufacturer name (e.g. "Parker", "Bosch Rexroth", "Eaton")
+- "competitor_company": the competitor manufacturer name (e.g. "Parker", "Bosch Rexroth", "Vickers by Danfoss")
 - "product_type": what type of product this is (e.g. "Proportional Directional Valve", "Servo Valve", "Piston Pump")
 - "notes": any additional notes about the equivalence (compatibility notes, differences, etc.)
 

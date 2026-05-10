@@ -95,12 +95,19 @@ Model codes never contain parentheses. The `code_template` string must use only
 **WRONG**: `{01}{02}{03}({04})-{05}-{06}-{07}` — produces `(A)` or `()` in final codes.
 **CORRECT**: `{01}{02}{03}{04}-{05}-{06}-{07}` with an option `code=""` for the no-code case.
 
-### Danfoss DG4V vs Vickers/Eaton DG4V — position 4 difference
+### Danfoss DG4V vs Vickers by Danfoss DG4V — position 4 difference
+
+**Brand history note**: Danfoss acquired Eaton's hydraulics division in 2021.
+The industrial directional valve range (formerly Eaton/Vickers) is now branded
+**"Vickers by Danfoss"** — Danfoss resurrected the Vickers name because of its
+strong industry reputation. "Eaton" no longer produces hydraulic valves; any
+reference to "Eaton" in older catalogues or cross-reference tables means the
+same product line, now sold under the Vickers by Danfoss brand.
 
 The Vickers-branded and Danfoss-branded DG4V user guides describe the **same valve
 body** but use **different ordering code structures** at position 4:
 
-| Position 4 | Vickers/Eaton guide | Danfoss guide |
+| Position 4 | Vickers (by Danfoss) guide | Danfoss guide |
 |---|---|---|
 | Code | `C`, `A`, or `D` (variable) | `M` (fixed) |
 | Meaning | Spring return type: C = spring-centred, A = spring-offset, D = detent | Modifications identifier — always present |
@@ -370,7 +377,7 @@ either find a Danfoss soft-shift counterpart or drop confidence below 0.75.
 Even when valve bodies are dimensionally interchangeable (DG4V-3 ↔ 4WE6 ↔ D1VW
 share ISO 4401-03 mounting), **coils are NOT cross-compatible** between
 manufacturers:
-- Vickers/Eaton coil: 42 × 40 × 35 mm rectangular housing
+- Vickers by Danfoss coil: 42 × 40 × 35 mm rectangular housing
 - Bosch Rexroth coil: Ø30 × 55 mm cylindrical housing
 
 Forcing a coil swap damages connector pins and can crack the coil housing. The

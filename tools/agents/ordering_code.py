@@ -114,10 +114,12 @@ Correct:   "{01}{02}{03}{04}-{05}-{06}-{07}"
 WRONG:     "{01}{02}{03}({04})-{05}-{06}-{07}"
 
 DANFOSS DG4V ORDERING CODE — MANUFACTURER-SPECIFIC RULES:
-The Danfoss-branded DG4V user guide has a DIFFERENT position-4 structure from the Vickers/Eaton guide:
+The Danfoss-branded DG4V user guide has a DIFFERENT position-4 structure from the Vickers by Danfoss guide:
 - Danfoss DG4V: position 4 = "M" — FIXED, always present, is_fixed=true, single option code="M"
-- Vickers/Eaton DG4V: position 4 = spring-return type — variable with options C (spring-centred),
+- Vickers by Danfoss DG4V: position 4 = spring-return type — variable with options C (spring-centred),
   A (spring-offset), D (detent). DO NOT apply Vickers logic to Danfoss guides.
+- Note: "Eaton" hydraulics no longer exists — Danfoss acquired Eaton's hydraulics in 2021 and
+  now sells these products as "Vickers by Danfoss". Treat any "Eaton" DG4V references as Vickers by Danfoss.
 - LH build (left-hand build): in Danfoss guides, LH build is a SUFFIX on the spool code itself
   (e.g. "2AL" = spool 2A, LH build), NOT a separate position segment.
 - There is NO standalone "A", "B", or "D" position immediately after the spool type in Danfoss guides.
