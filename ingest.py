@@ -302,7 +302,6 @@ class IngestionPipeline:
                 print(f"[ERROR] Vision spool extraction failed: {e}")
                 self._last_extraction_diagnostics["vision_spools_found"] = 0
                 self._last_extraction_diagnostics["vision_spool_error"] = str(e)
-                import traceback
                 traceback.print_exc()
         else:
             print(f"[DEBUG] Skipping vision — {combined_pre_vision} spools already found from reference/text")
