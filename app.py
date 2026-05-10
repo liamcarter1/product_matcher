@@ -38,4 +38,5 @@ if __name__ == "__main__":
     admin_pass = os.getenv("ADMIN_PASSWORD")
     if admin_user and admin_pass:
         launch_kwargs["auth"] = (admin_user, admin_pass)
+    app.queue(default_concurrency_limit=5)
     app.launch(**launch_kwargs)

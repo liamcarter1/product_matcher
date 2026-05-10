@@ -110,8 +110,8 @@ SEGMENT NAMING RULES — CRITICAL:
 CODE TEMPLATE PARENTHESES — FORBIDDEN:
 NEVER use parentheses in the code_template string. Model codes do NOT contain parentheses.
 If a segment is optional (default = "no code"), represent it with one option having code="" (empty string).
-Correct:   "{01}{02}{03}{04}-{05}-{06}-{07}"
-WRONG:     "{01}{02}{03}({04})-{05}-{06}-{07}"
+Correct:   "{{01}}{{02}}{{03}}{{04}}-{{05}}-{{06}}-{{07}}"
+WRONG:     "{{01}}{{02}}{{03}}({{04}})-{{05}}-{{06}}-{{07}}"
 
 DANFOSS DG4V ORDERING CODE — MANUFACTURER-SPECIFIC RULES:
 The Danfoss-branded DG4V user guide has a DIFFERENT position-4 structure from the Vickers by Danfoss guide:

@@ -2117,8 +2117,13 @@ def _parse_ordering_code_response(
                                        "set to segment_name: '%s'",
                                        opt.get("code", ""), seg_name)
 
+                raw_pos = seg_data.get("position", 0)
+                try:
+                    parsed_pos = int(str(raw_pos).rstrip("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") or 0)
+                except (ValueError, TypeError):
+                    parsed_pos = 0
                 segments.append(OrderingCodeSegment(
-                    position=seg_data.get("position", 0),
+                    position=parsed_pos,
                     segment_name=seg_name,
                     is_fixed=seg_data.get("is_fixed", True),
                     separator_before=seg_data.get("separator_before", ""),
