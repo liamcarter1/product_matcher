@@ -261,6 +261,77 @@ class ProductDB:
             self.conn.commit()
         return product.id
 
+    def bulk_insert_products(self, products: list) -> int:
+        """Insert many products in a single transaction — much faster than one-by-one."""
+        if not products:
+            return 0
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute("BEGIN")
+            try:
+                for product in products:
+                    if not product.id:
+                        product.id = str(uuid.uuid4())
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO products (
+                            id, company, model_code, product_name, category, subcategory,
+                            max_pressure_bar, max_flow_lpm, valve_size, spool_type,
+                            num_positions, num_ports, actuator_type, coil_voltage,
+                            coil_type, coil_connector, port_size, port_type,
+                            mounting, mounting_pattern, body_material, seal_material,
+                            operating_temp_min_c, operating_temp_max_c, fluid_type,
+                            viscosity_range_cst, weight_kg, displacement_cc,
+                            speed_rpm_max, bore_diameter_mm, rod_diameter_mm, stroke_mm,
+                            extra_specs,
+                            description, source_document, raw_text, model_code_decoded
+                        ) VALUES (
+                            ?, ?, ?, ?, ?, ?,
+                            ?, ?, ?, ?,
+                            ?, ?, ?, ?,
+                            ?, ?, ?, ?,
+                            ?, ?, ?, ?,
+                            ?, ?, ?,
+                            ?, ?, ?,
+                            ?, ?, ?, ?,
+                            ?,
+                            ?, ?, ?, ?
+                        )
+                    """, (
+                        product.id, product.company, product.model_code,
+                        product.product_name, product.category, product.subcategory,
+                        product.max_pressure_bar, product.max_flow_lpm,
+                        product.valve_size, product.spool_type,
+                        product.num_positions, product.num_ports,
+                        product.actuator_type, product.coil_voltage,
+                        product.coil_type, product.coil_connector,
+                        product.port_size, product.port_type,
+                        product.mounting, product.mounting_pattern,
+                        product.body_material, product.seal_material,
+                        product.operating_temp_min_c, product.operating_temp_max_c,
+                        product.fluid_type, product.viscosity_range_cst,
+                        product.weight_kg, product.displacement_cc,
+                        product.speed_rpm_max, product.bore_diameter_mm,
+                        product.rod_diameter_mm, product.stroke_mm,
+                        json.dumps(product.extra_specs) if product.extra_specs else '{}',
+                        product.description, product.source_document, product.raw_text,
+                        json.dumps(product.model_code_decoded) if product.model_code_decoded else None,
+                    ))
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+        return len(products)
+
+    def delete_all_products_bulk(self) -> int:
+        """Delete ALL products in a single SQL statement — much faster than one-by-one."""
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM products")
+            count = cursor.fetchone()[0]
+            cursor.execute("DELETE FROM products")
+            self.conn.commit()
+        return count
+
     def get_product(self, product_id: str) -> Optional[HydraulicProduct]:
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM products WHERE id = ?", (product_id,))

@@ -876,6 +876,7 @@ class IngestionPipeline:
         Called after admin reviews and approves the extraction."""
 
         stored_count = 0
+        products_to_insert = []
         for ep in extracted_products:
             product = self._extracted_to_hydraulic(ep, metadata)
 
@@ -883,16 +884,16 @@ class IngestionPipeline:
             decoded = self.db.decode_model_code(product.model_code, product.company)
             if decoded:
                 product.model_code_decoded = decoded
-                # Fill in specs from decoded model code
                 self._apply_decoded_specs(product, decoded)
 
-            # Store in SQLite
-            self.db.insert_product(product)
+            products_to_insert.append(product)
 
-            # Index in ChromaDB
-            self.vector_store.index_product(product)
-
-            stored_count += 1
+        # Bulk insert all products in one transaction (much faster than one-by-one)
+        if products_to_insert:
+            self.db.bulk_insert_products(products_to_insert)
+            for product in products_to_insert:
+                self.vector_store.index_product(product)
+            stored_count = len(products_to_insert)
 
         # Auto-learn spool types from confirmed products
         if auto_learn_spools and extracted_products:

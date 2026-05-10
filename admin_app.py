@@ -533,16 +533,16 @@ def delete_product(product_id):
 def delete_all_products():
     """Delete ALL products from the database and vector store."""
     try:
-        products = db.get_all_products()
-        if not products:
+        # Bulk delete from SQLite in one SQL statement (much faster than one-by-one)
+        count = db.delete_all_products_bulk()
+        if count == 0:
             return "Database is already empty."
-        count = len(products)
-        for p in products:
-            db.delete_product(p.id)
-            try:
-                vs.delete_product(p.id, p.company)
-            except Exception:
-                pass  # Vector cleanup is best-effort
+        # Clear vector store collections (best-effort)
+        try:
+            vs.my_company_col.clear()
+            vs.competitor_col.clear()
+        except Exception:
+            pass
         return f"Deleted all {count} products from the database."
     except Exception as e:
         logger.error(f"Delete all error: {e}", exc_info=True)
