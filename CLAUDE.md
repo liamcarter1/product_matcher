@@ -80,12 +80,14 @@ Reuses all prompts from `prompts.py` and `LookupTools` for DB/vector operations.
 
 ### Storage
 
-**SQLite** (`storage/product_db.py`) - 5 tables:
+**SQLite** (`storage/product_db.py`) - 7 tables:
 - `products` - 34 spec columns + metadata, indexed on model_code/company/category/coil_voltage/valve_size
 - `model_code_patterns` - Decode rules for model code segments (extracted from user guides)
 - `confirmed_equivalents` - Manual overrides from admin (bypasses algorithmic matching)
 - `feedback` - Distributor thumbs up/down on results
 - `synonyms` - Brand name mappings (e.g. "Rexroth" -> "Bosch Rexroth")
+- `spool_type_reference` - Per-manufacturer spool dictionary (manufacturer + series_prefix + spool_code → description, center_condition, canonical_pattern). Auto-loaded from `data/spool_seed.json` on every startup (idempotent — `source = 'seed'` rows are skipped if already present unless `force=True`). Drives cross-manufacturer translation in `enrich_competitor_spool()`. See "Spool Matching" section below.
+- `series_cross_reference` - Series-level mappings extracted from cross-reference tables in PDFs (competitor_series → my_company_series); used as a hint for vector search
 
 **Numpy Vector Store** (`storage/vector_store.py`) - 3 collections:
 - `danfoss_products` - Searched with cross-encoder reranking
@@ -109,7 +111,7 @@ SCORE_WEIGHTS (total = 1.0):
   valve_size_match:     0.10  (fuzzy string match)
   coil_voltage_match:   0.10  (fuzzy string match - "24VDC" = "24 VDC")
   actuator_type_match:  0.08  (fuzzy string match)
-  spool_function_match: 0.08  (fuzzy string match)
+  spool_function_match: 0.08  (CANONICAL-PATTERN equality if both sides have extra_specs["canonical_spool_pattern"]; otherwise falls back to fuzzy string match on raw spool_type code)
   mounting_match:       0.08  (fuzzy, falls back to mounting_pattern)
   port_match:           0.06  (fuzzy string match)
   seal_material_match:  0.03  (fuzzy string match)
@@ -204,8 +206,195 @@ product_matcher/
       cross_reference.py   (~80 lines)  Cross-reference table extraction
       image_reader.py     (~100 lines)  Camera/photo label reading
       chat_agent.py       (~380 lines)  Distributor chat (replaces LangGraph graph.py)
-  data/                              Gitignored runtime data (.db, .npz, .json)
+  data/
+    spool_seed.json                  COMMITTED — canonical Danfoss + Bosch Rexroth 4WE6 spool dictionary (41 entries v1.2). Auto-loaded into spool_type_reference table on startup.
+    *.db, *_index.json, *_vectors.npz Gitignored runtime data (SQLite + vector store).
+  skills/
+    hydraulics_engineer.md           COMMITTED — domain-knowledge skill file loaded into LLM agent prompts via tools/agents/base.py:get_skill_context().
 ```
+
+## Spool Matching & Cross-Manufacturer Translation
+
+The most consequential matching field is `spool_type` (weight 0.08, but it's the
+field most likely to drop confidence below 0.75 when wrong). The same physical
+spool function has different code letters per manufacturer (Rexroth `E` ≡ Danfoss
+`2C` — both BLOCKED). Naive fuzzy string match on raw codes scores ≈ 0.0 on these.
+The system solves this via a **canonical-pattern translation table**.
+
+### Translation flow at query time
+
+```
+Distributor types e.g. "4WE6E62/EG24N9K4"
+  ↓
+identify_competitor_product()              # finds product or extracts from code
+  ↓
+enrich_competitor_spool()                  # looks up Bosch Rexroth/4WE6/E in
+  (lookup_tools.py:120)                    # spool_type_reference table
+  ↓                                        # → sets product.extra_specs
+                                           #   ["canonical_spool_pattern"] =
+                                           #   "BLOCKED|PA-BT|PB-AT"
+find_my_company_equivalents()              # for each Danfoss candidate
+  (lookup_tools.py:202)                    # whose pattern is also "BLOCKED|..."
+                                           # spool_function_match = 1.0
+  ↓
+spec_comparison()                          # weighted sum + category gate
+  (product_db.py:1057)
+  ↓
+≥ 0.75 confidence → return match
+< 0.75 confidence → "contact sales rep"
+```
+
+### `spool_seed.json` schema (v1.2)
+
+Each entry:
+```json
+{
+  "series_prefix": "4WE6",                 // Manufacturer's series identifier
+  "manufacturer": "Bosch Rexroth",         // Must match the company string
+                                           // used in admin uploads exactly
+  "spool_code": "E",                       // The literal spool code from the
+                                           // ordering code position
+  "description": "...",                    // Human-readable
+  "center_condition": "...",               // De-energised flow paths
+  "solenoid_a_function": "...",            // Per spec_comparison consumer
+  "solenoid_b_function": "...",
+  "canonical_pattern": "BLOCKED|PA-BT|PB-AT",  // FAMILY|sol-a|sol-b — the
+                                               // matching key. Equality on
+                                               // this string = spool match
+  "topology": "4/3 double-solenoid",       // 4/2 single-solenoid /
+                                           // 4/3 double-solenoid /
+                                           // 4/2 double-solenoid
+  "hand_build": "symmetric",               // symmetric / left / right
+                                           // (for matching LH ↔ RH builds)
+  "is_primary": true                       // Surface in primary spool dropdown
+}
+```
+
+The seven canonical pattern families:
+
+| Family | De-energised centre | Used by |
+|---|---|---|
+| `BLOCKED` | All ports blocked | DG4V `2C`/`2A`/`2N`, Rexroth `E`/`E1`/`D` |
+| `OPEN` | All four interconnected | DG4V `0C`/`0A`/`10C`/`36`, Rexroth `H`/`C` |
+| `TANDEM` | P→T, A&B blocked | DG4V `8C`/`6B`, Rexroth `G` |
+| `FLOAT` | P blocked, A→T, B→T (or full float) | DG4V `6C`/`33C`/`H`, Rexroth `J`/`Q`/`W` |
+| `REGEN` | P→A, P→B, T blocked | DG4V `4C`/`7C`, Rexroth `M` |
+| `SELECTOR` | P→A (or B), other blocked, T isolated | DG4V `22A`/`22AL`, Rexroth `A`/`B` |
+| `ASYMMETRIC` | One work port behaves differently | DG4V `31C`/`52C`, Rexroth `R`/`U` |
+
+Plus unique non-Danfoss patterns for Rexroth `F`, `L`, `P`, `T`, `V` — these have
+NO equivalent in the Danfoss user guide and intentionally fall through to
+"contact sales rep" because no Danfoss entry shares their pattern string.
+
+### Naming conventions encoded in the seed
+
+- **`L` suffix on a Danfoss code** = spring-offset **left-hand build** (NOT lapped
+  spool). E.g. `2A` is RH build, `2AL` is LH build (same family, mirrored
+  centre). `22A` / `22AL` follow the same rule.
+- **`73` suffix on a Rexroth code** = soft-shift / smooth-switching variant.
+  Same canonical pattern as the base spool, but the matching layer should drop
+  confidence by ~10% on cross-substitution because shift dynamics differ.
+  Equivalent to Danfoss `FS` suffix.
+- **`E1`, `E2`, `E3`** in Rexroth = transition-behaviour variants of `E`. `E1`
+  has explicit P-to-A/B pre-opening with a pressure-intensification warning for
+  differential-cylinder applications.
+- **Letter + position suffix in Rexroth ordering codes** (e.g. `..EA..`,
+  `..E73A..`) — the trailing `A`/`B` is the spool-position-a/b indicator, not
+  part of spool functional identity.
+
+### Idempotency caveat for the seed loader
+
+`db.load_seed_spool_data()` skips reload when `spool_type_reference` already
+contains rows with `source = 'seed'`. This means **after the seed file is
+edited and pushed, an existing deployment won't pick up the changes on a normal
+restart**. Two ways to force the new data:
+
+1. Wipe the DB: `rm data/*.db data/*.npz` then restart (loses all uploaded
+   products — only safe on a clean instance).
+2. Trigger the admin app's force-reload action (`db.load_seed_spool_data(path,
+   force=True)` at `admin_app.py:785`).
+
+### Deferred audit items in the seed file
+
+These are known inconsistencies that the v1.2 update did NOT fix (intentionally
+deferred to a full audit):
+
+- `0A` and `2A` have descriptions like "Open center" / "Closed center" but their
+  `topology` was changed to `4/2 single-solenoid` to align with the verified
+  Rexroth `C → 0A` and `D → 2A` cross-references (which are 4/2 spools with
+  P→A,B→T centres). The description text doesn't match the topology yet.
+- `6CL` was REMOVED in v1.1 because the domain expert confirmed it does not
+  exist. If a downstream extraction sees `6CL`, treat as junk.
+- `2N` is currently described as `4/3 closed center, no crossover`, but per
+  the L-suffix convention it should logically be a separate spring-offset
+  variant. Domain-expert review pending.
+
+When extending or modifying, see "Interview-Driven Knowledge Updates" pattern
+below.
+
+## Skill File (`skills/hydraulics_engineer.md`)
+
+The skill file is the prose counterpart to `spool_seed.json` — it provides
+**extraction-time** domain knowledge to the LLM agents (the seed file provides
+**runtime** matching translations).
+
+### How it's loaded
+
+`tools/agents/base.py:get_skill_context(*keys)` parses the file into sections by
+`## N. <Name>` headers. Each section's key is the lowercased name with spaces
+replaced by underscores. An agent calling `get_skill_context("spool", "unit",
+"failure")` receives the concatenation of every section whose key contains any
+of those substrings.
+
+Current sections (7) and which agents pull them:
+
+| Section | Pulled by |
+|---|---|
+| 1. Ordering Code Structure | ordering_code agent (matches "ordering") |
+| 2. Spool Type Identification — Canonical Functional Taxonomy | ordering_code, product_extractor, spool_analyzer (all match "spool") |
+| 3. Bosch Rexroth 4WE6 Spool Reference | (matches "spool") |
+| 4. Spool Cross-References — Rexroth ↔ Danfoss with False Friends | (matches "spool") |
+| 5. Key Specification Fields | product_extractor (matches "spec") |
+| 6. Unit Normalisation | ordering_code, product_extractor, spool_analyzer (all match "unit") |
+| 7. Common Failure Modes and False Friends | ordering_code, spool_analyzer (match "failure") |
+
+### What the skill file authoritatively documents
+
+- The full 20-spool Bosch Rexroth 4WE6 reference table (RE 23178 verified)
+- The Rexroth → Danfoss cross-reference, including no-equivalent codes
+- **The Rexroth-H ≠ Danfoss-H false friend** (the most expensive error type)
+- L = LH build / 73 = soft-shift / E1 = pre-opening / 46 = SO407-OF version
+- Topology distinction (4/2 single-solenoid vs 4/3 double-solenoid; 3-box symbols
+  can be either)
+- Hand-build matching rule (LH vs RH not interchangeable)
+- Worked decoding examples for `DG4V-3-2C-M-U-H7-60` and `4WE6E62/EG24N9K4`
+- DG4V-3 vs DG4V-5 spec table; ISO 4401 dimensional interchange table
+- Voltage code hierarchy (G/H/A/B family + G7/H7 specific)
+- Suffix code reference (FS, P, MU, X90, PVG, C/A/D centring)
+- DON'T-list covering both extraction-time and matching-time failure modes
+
+### When to update the skill file
+
+- After any domain-expert clarification (e.g. correcting a spool function
+  description, adding a manufacturer)
+- When `spool_seed.json` changes — the prose narrative must stay aligned
+- When a new false-friend or anti-pattern is observed in production matching
+- Treat the skill file and the seed file as **twin authorities** — neither is
+  complete without the other
+
+## Manufacturer Coverage Status
+
+Current state of `spool_seed.json` per the domain-expert interview:
+
+| Manufacturer | Series | Entries | Status |
+|---|---|---|---|
+| Danfoss | DG4V | 21 | Cross-reference target. v1.1/v1.2 fixed `6C`, `8C`, `33C`, `2AL` descriptions; added `22A`, `22AL`, `7C`, `31C`, `52C`. |
+| Bosch Rexroth | 4WE6 | 20 | Full coverage of A, B, C, D, E, E1, F, G, H, J, L, M, P, Q, R, T, U, V, W, Y. Verified against RE 23178 (2019-01). |
+| Parker | D1VW | 0 | **Pending** — domain expert agreed to dictate cross-references; not started. |
+| HAWE, Yuken, Atos, Nachi, MOOG | — | 0 | **Pending** — agreed to use canonical-pattern matching only (no per-letter table); spool diagrams will be classified into the 7 families at extraction time. |
+
+The matching pipeline functionally works for any manufacturer once a seed entry
+exists with a `canonical_pattern` matching one of the seven families.
 
 ## Known Issues & Gotchas
 
@@ -299,6 +488,33 @@ Must be added in **6 places**:
 - Fuzzy match thresholds: `identify_competitor_product()` in `tools/lookup_tools.py`
 - DB fallback: `find_my_company_equivalents()` in `tools/lookup_tools.py`
 
+### Interview-Driven Knowledge Updates (Spool Seed + Skill File)
+
+When extending coverage to a new manufacturer or correcting an existing entry,
+follow this pattern (proven in the v1.1 / v1.2 work):
+
+1. **Source ground truth from a domain expert**, not public catalogues. Public
+   parts websites have been observed to ship cross-reference tables with
+   functional definitions swapped (e.g. claiming Vickers Type 6 is closed when
+   it's tandem). The expert's user guide is canonical.
+2. **For each new spool**, capture: code, topology, hand_build, de-energised
+   centre, and which Danfoss code it cross-references to. The Danfoss code
+   determines the `canonical_pattern` string to use.
+3. **Add seed entries** to `data/spool_seed.json`. Set `canonical_pattern`
+   identical to the Danfoss equivalent's pattern so equality matching fires.
+   For codes with no Danfoss equivalent, give them a unique pattern string
+   (e.g. `HYBRID-OPEN-TANDEM|...`) so they correctly fall through.
+4. **Update the skill file** (`skills/hydraulics_engineer.md`) with the new
+   manufacturer's reference table and any new false-friend warnings. Keep prose
+   and seed in sync.
+5. **Increment the seed file's `version`** and append the change to its
+   `description` field.
+6. **Bump the deployment**: branch protection on `main` blocks direct push, so
+   commit to a feature branch, open a PR, merge. See "Deployment & Branch
+   Workflow" below.
+7. **Force-reload the seed on the deployed instance** if the DB is not wiped —
+   the loader is idempotent and will skip otherwise.
+
 ### Adding a New Agent
 1. Create `tools/agents/my_agent.py`
 2. Import `call_llm` / `call_llm_json` / `call_llm_tool` from `tools.llm_client`
@@ -344,6 +560,81 @@ The following security and resilience fixes have been applied:
 ### Configurable Binding
 - All apps use env vars for host/port — critical for HF Spaces (`0.0.0.0` binding required)
 - `max_file_size` set on Gradio launch to enforce upload limits server-side
+
+## Deployment & Branch Workflow
+
+### Live deployment
+
+The live app is hosted on **Replit** (the user's account; URL not in repo).
+Replit pulls from `https://github.com/liamcarter1/product_matcher` on each
+deploy. The active branch is `main`. The `.replit` config runs `python app.py`
+and maps localPort 7860 → externalPort 80.
+
+The repo also ships:
+- HF Spaces frontmatter in `README.md` (`title`, `sdk: gradio`, `app_file: app.py`)
+  — could be deployed to a Space; not currently in active use.
+- `Dockerfile` + `docker-compose.yml` + `deploy/nginx-match.conf` for VPS
+  deployment behind Nginx (WebSocket-aware reverse proxy).
+
+### Branch protection on `main`
+
+`main` is **branch-protected** on GitHub — direct pushes return HTTP 403. All
+changes must land via PR + merge. Workflow:
+
+```bash
+# Develop on a feature branch
+git checkout -b feat/my-change
+# ... edit, commit ...
+git push -u origin feat/my-change
+# Open a PR via the GitHub MCP tools or the GitHub UI, then merge.
+# Replit will pick up the new main on its next pull/redeploy.
+```
+
+If using the GitHub MCP tools (e.g. when running Claude Code with GitHub
+integration), the auto-merge pattern after `mcp__github__create_pull_request` is
+`mcp__github__merge_pull_request` with `merge_method: "merge"`.
+
+### After deploying a seed-file change
+
+Replit will pull the updated `spool_seed.json` automatically, but the
+`spool_type_reference` table in SQLite **won't be re-loaded** unless either:
+- The DB is wiped (`rm data/*.db data/*.npz` in Replit Shell, then restart), or
+- The admin app's force-reload action is triggered.
+
+Plan the rollout accordingly — wiping the DB also drops uploaded products and
+the vector store, requiring re-upload of all PDFs.
+
+## Setup Gotchas (when onboarding a fresh environment)
+
+These are the friction points encountered when bootstrapping the project on a
+new machine or container.
+
+### `_cffi_backend` / cryptography clash on Debian-based systems
+
+`pdfplumber` → `pdfminer` → `cryptography` requires the rust-bindings cffi
+backend. If the system already has a Debian-installed `cryptography` package, a
+plain `pip install -r requirements.txt` may not override it cleanly, leaving
+`pyo3_runtime.PanicException` on import. Fix:
+
+```bash
+pip install --upgrade --ignore-installed cffi cryptography
+```
+
+### sentence-transformers offline / restricted environments
+
+`storage/vector_store.py` initialises the embedding model
+`sentence-transformers/all-MiniLM-L6-v2` and the cross-encoder reranker
+`cross-encoder/ms-marco-MiniLM-L-6-v2` lazily on first use. If the host has no
+outbound access to `huggingface.co`, the app fails to start with `OSError: We
+couldn't connect to 'https://huggingface.co'`. Pre-cache the models on a host
+with internet, then mirror the cache to the offline host (`~/.cache/huggingface`),
+or set `HF_HOME` to a pre-populated directory.
+
+### `python-dotenv` not always installed by `pip install -r requirements.txt`
+
+If a script importing `dotenv` fails with `ModuleNotFoundError`, install
+explicitly: `pip install python-dotenv`. (Observed when system pip silently
+skipped it during the requirements install.)
 
 ## Environment Variables
 
