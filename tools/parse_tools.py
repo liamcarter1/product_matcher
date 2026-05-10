@@ -749,8 +749,11 @@ DANFOSS DG4V ORDERING CODE — MANUFACTURER-SPECIFIC RULES:
 - Vickers by Danfoss DG4V: position after spool = spring-return type (C/A/D). DO NOT apply Vickers
   C/A/D logic to Danfoss-branded DG4V guides.
   (Note: "Eaton" hydraulics = now "Vickers by Danfoss" — acquired 2021. Same product line.)
-- In Danfoss guides, LH build is the terminal "L" suffix on the spool code itself (e.g. "2AL"),
-  NOT a separate segment. There is no standalone "A", "B", or "D" segment after the spool type.
+- In Danfoss guides, LH build and spring-offset are EMBEDDED in the spool code (e.g. "2A",
+  "2AL") — they are NOT a separate segment. Do NOT create any segment with options only
+  from {"A", "L", "AL", ""} adjacent to the spool_type segment for Danfoss guides.
+  The ordering code page may explain what A and L mean — that is documentation of the
+  spool codes, not a new segment. The segment after spool_type is fixed "M".
 - Example correct Danfoss code: DG4V-3-2C-M-U-H7-60 (spool=2C, M=fixed, U=connector, H7=24VDC, 60=design)
 
 Return a JSON object: {{"ordering_codes": [...]}}
@@ -1928,6 +1931,98 @@ def _classify_spool_pages(
     return classifications
 
 
+# Build-suffix codes that are embedded in Danfoss spool type codes (2A, 2AL, 22AL …)
+# and must NOT appear as a separate segment immediately after the spool_type segment.
+_DANFOSS_BUILD_CODES = {'A', 'L', 'AL', ''}
+
+# Segment name keywords that indicate a phantom spring-return / hand-build segment
+_BUILD_SEGMENT_KEYWORDS = {
+    'hand', 'build', 'spring', 'offset', 'return', 'actuator_config',
+    'hand_build', 'spring_return', 'spring_offset',
+}
+
+
+def _suppress_phantom_build_segments(segments: list[OrderingCodeSegment]) -> list[OrderingCodeSegment]:
+    """Detect and neutralise phantom hand-build / spring-return segments in Danfoss codes.
+
+    In Danfoss DG4V ordering codes the A/L build suffix is embedded directly in the
+    spool type code (e.g. '2A', '2AL').  The LLM sometimes also extracts a *separate*
+    segment immediately after the spool type whose only options are 'A', 'L', 'AL',
+    and/or '' — a duplicate of information already in the spool code.  When generated,
+    this produces '2AA', '2ALL', etc.
+
+    Detection criteria (all must be true):
+    1. The spool_type segment has at least one option whose code ends in 'A' or 'L'
+       and has length > 1 (i.e. the build suffix is embedded, not a bare 'A' spool).
+    2. A candidate segment's option codes are a strict subset of {'A', 'L', 'AL', ''}.
+    3. The candidate segment is adjacent (within 2 positions) to the spool_type segment.
+
+    Action: make the phantom segment is_fixed=True with a single no-code option so it
+    contributes nothing to assembled model codes while preserving segment count.
+    """
+    # Find spool segment position
+    spool_seg = None
+    spool_pos = None
+    for seg in segments:
+        if seg.segment_name == "spool_type" or any(
+            o.get("maps_to_field") == "spool_type" for o in seg.options
+        ):
+            spool_seg = seg
+            spool_pos = seg.position
+            break
+
+    if spool_seg is None:
+        return segments
+
+    # Does the spool segment already encode build suffixes?
+    spool_option_codes = {o.get("code", "").upper() for o in spool_seg.options}
+    spool_has_embedded_build = any(
+        len(code) > 1 and (code.endswith("A") or code.endswith("L"))
+        for code in spool_option_codes
+    )
+    if not spool_has_embedded_build:
+        return segments  # nothing to suppress (e.g. Rexroth single-letter codes)
+
+    result = []
+    for seg in segments:
+        if seg.position == spool_pos:
+            result.append(seg)
+            continue
+
+        # Is this segment adjacent to the spool segment (within 2 positions)?
+        if abs(seg.position - spool_pos) > 2:
+            result.append(seg)
+            continue
+
+        # Is every option code in the build-suffix set?
+        option_codes = {o.get("code", "").upper() for o in seg.options}
+        if not option_codes or not option_codes.issubset(_DANFOSS_BUILD_CODES):
+            result.append(seg)
+            continue
+
+        # Extra confirmation: segment name hints at build/spring
+        name_lower = seg.segment_name.lower()
+        name_is_build = any(kw in name_lower for kw in _BUILD_SEGMENT_KEYWORDS)
+
+        # Suppress if name confirms it OR if there are ≤ 3 options (very narrow segment)
+        if name_is_build or len(option_codes) <= 3:
+            # Neutralise: make it a fixed no-code position
+            seg.is_fixed = True
+            seg.options = [{"code": "", "description": "no code",
+                            "maps_to_field": seg.segment_name,
+                            "maps_to_value": ""}]
+            logger.info(
+                "Suppressed phantom build segment '%s' (pos %d) adjacent to spool_type",
+                seg.segment_name, seg.position,
+            )
+            print(f"[DEBUG] Suppressed phantom build segment '{seg.segment_name}' "
+                  f"(pos {seg.position}) — build suffix already in spool codes: "
+                  f"{sorted(spool_option_codes)}")
+        result.append(seg)
+
+    return result
+
+
 def _parse_ordering_code_response(
     raw_codes: list[dict], company: str, category: str,
 ) -> list[OrderingCodeDefinition]:
@@ -1973,6 +2068,10 @@ def _parse_ordering_code_response(
                     separator_before=seg_data.get("separator_before", ""),
                     options=seg_data.get("options", []),
                 ))
+
+            # Remove phantom hand-build / spring-return segments that duplicate
+            # suffixes already embedded in the spool type codes (Danfoss DG4V).
+            segments = _suppress_phantom_build_segments(segments)
 
             definition = OrderingCodeDefinition(
                 company=company,

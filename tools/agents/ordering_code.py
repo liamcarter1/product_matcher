@@ -120,9 +120,12 @@ The Danfoss-branded DG4V user guide has a DIFFERENT position-4 structure from th
   A (spring-offset), D (detent). DO NOT apply Vickers logic to Danfoss guides.
 - Note: "Eaton" hydraulics no longer exists — Danfoss acquired Eaton's hydraulics in 2021 and
   now sells these products as "Vickers by Danfoss". Treat any "Eaton" DG4V references as Vickers by Danfoss.
-- LH build (left-hand build): in Danfoss guides, LH build is a SUFFIX on the spool code itself
-  (e.g. "2AL" = spool 2A, LH build), NOT a separate position segment.
-- There is NO standalone "A", "B", or "D" position immediately after the spool type in Danfoss guides.
+- LH build and spring-offset direction are EMBEDDED in the Danfoss spool type code itself.
+  "2A" already means spring-offset; "2AL" already means spring-offset + LH build.
+  Do NOT create a separate segment with options "A", "L", "AL", or "" adjacent to
+  the spool_type segment — these are part of the spool code, not extra positions.
+  The ordering code page may have a note explaining what A and L mean — that is
+  documentation of the spool codes, NOT an additional segment.
 - The segment immediately after spool_type in Danfoss DG4V is "-M-" (fixed).
 - Example: DG4V-3-2C-M-U-H7-60 = series/size/spool/M-fixed/connector/voltage/design.
 

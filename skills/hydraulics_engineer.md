@@ -117,9 +117,22 @@ body** but use **different ordering code structures** at position 4:
 position 4 MUST be extracted as `is_fixed=true` with a single option `code="M"`.
 Do **NOT** add `A`, `B`, `C`, or `D` as options for position 4 in Danfoss guides.
 
-**LH build** in Danfoss guides is expressed as a terminal `L` appended to the spool
-code itself (e.g. `2AL`, `22AL`) — it is NOT a separate segment at any position.
-There is no standalone `A` or `L` segment immediately after the spool type.
+**LH build and spring-offset direction are embedded in the spool type code — they are
+NOT separate segments.** The spool type segment options already contain the full code:
+
+| Spool option | Meaning | What it encodes |
+|---|---|---|
+| `2A` | Spring-offset, RH build | Base spool 2 + spring-offset-A |
+| `2AL` | Spring-offset, LH build | Base spool 2 + spring-offset-A + LH-build |
+| `2C` | Spring-centred, RH build | Base spool 2 + spring-centred |
+| `22A` | Selector, RH build | Base spool 22 + spring-offset-A |
+| `22AL` | Selector, LH build | Base spool 22 + spring-offset-A + LH-build |
+
+**Do NOT create a separate segment** with options `A`, `L`, `AL`, or `""` adjacent
+to the spool_type segment for Danfoss guides. The ordering code page may have a
+sub-table explaining what `A` and `L` mean — this is documentation, not a separate
+segment. If you see `A` and `L` explained in the notes, it means the spool codes
+themselves end in `A` or `AL`; no additional segment is needed.
 
 Worked code breakdown for `DG4V-3-2C-M-U-H7-60`:
 
