@@ -121,7 +121,7 @@ class ChatAgent:
                 break
 
         model_match = re.search(r'[A-Z0-9][A-Z0-9\-/\.]{3,}[A-Z0-9]', text, re.IGNORECASE)
-        model_code = model_match.group(0) if model_match else text.split()[0] if text else ""
+        model_code = model_match.group(0) if model_match else ""
 
         return {
             "model_code": model_code,

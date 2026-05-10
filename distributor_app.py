@@ -107,13 +107,6 @@ def submit_feedback(history, thumbs_up):
         return "Feedback saved."
 
 
-def get_suggestions(partial):
-    """Get typeahead suggestions as the user types."""
-    if not partial or len(partial) < 2:
-        return gr.Dropdown(choices=[])
-    suggestions = lookup.get_typeahead_suggestions(partial, limit=8)
-    return gr.Dropdown(choices=suggestions)
-
 
 def get_company_choices():
     """Fetch current competitor companies from the database (called on every focus)."""

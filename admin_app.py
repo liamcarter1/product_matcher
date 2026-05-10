@@ -1134,7 +1134,7 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
             gr.Markdown("### Configuration")
             gr.Markdown(
                 f"- **Confidence Threshold:** {0.75:.0%} (change in `models.py` -> `CONFIDENCE_THRESHOLD`)\n"
-                f"- **Sales Contact:** Edit `SALES_CONTACT` in `graph.py`\n"
+                f"- **Sales Contact:** Edit `SALES_CONTACT` in `tools/agents/chat_agent.py`\n"
                 f"- **Model Code Patterns:** Automatically extracted from user guide uploads"
             )
 

@@ -834,6 +834,8 @@ class IngestionPipeline:
 
         for p in products:
             key = p.model_code.upper().strip()
+            if not key:
+                continue
             if key not in seen:
                 seen[key] = p
                 continue
