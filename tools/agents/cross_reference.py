@@ -20,7 +20,7 @@ Each row typically shows a {source_company} model code prefix alongside the comp
 Extract ALL series-level cross-reference mappings from the text below. For each mapping, provide:
 - "my_company_series": the {source_company}/Vickers/Danfoss series prefix (e.g. "KFDG4V-3", "DG4V-3", "KDG4V-3")
 - "competitor_series": the competitor's equivalent series prefix (e.g. "D1FW", "4WREE", "A10VSO")
-- "competitor_company": the competitor manufacturer name (e.g. "Parker", "Bosch Rexroth", "Eaton")
+- "competitor_company": the competitor manufacturer name (e.g. "Parker", "Bosch Rexroth", "Vickers by Danfoss")
 - "product_type": what type of product this is (e.g. "Proportional Directional Valve", "Servo Valve", "Piston Pump")
 - "notes": any additional notes about the equivalence (compatibility notes, differences, etc.)
 
