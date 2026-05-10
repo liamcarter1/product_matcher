@@ -9,6 +9,7 @@ from models import HydraulicProduct, MatchResult, ScoreBreakdown, CONFIDENCE_THR
 from storage.product_db import ProductDB
 from storage.vector_store import VectorStore
 from tools.parse_tools import compute_canonical_pattern
+from tools.agents.code_translator import CodeTranslator
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,7 @@ class LookupTools:
     def __init__(self, db: ProductDB, vector_store: VectorStore):
         self.db = db
         self.vs = vector_store
+        self.translator = CodeTranslator(db=db)
 
     def identify_competitor_product(
         self,
@@ -199,6 +201,30 @@ class LookupTools:
 
         return product
 
+    def translate_competitor_code(
+        self, model_code: str, manufacturer: str
+    ) -> dict:
+        """Decode a competitor code and construct the Danfoss equivalent.
+
+        Returns the full translation result dict from CodeTranslator.full_translate().
+        Keys: decoded, danfoss_code, danfoss_spool, voltage_info, confidence, explanation.
+        Returns {} if translation is not possible.
+        """
+        if not model_code or not manufacturer:
+            return {}
+        try:
+            result = self.translator.full_translate(model_code, manufacturer)
+            if result.get("danfoss_code"):
+                logger.info(
+                    "Code translation: %s %s -> %s (confidence: %s)",
+                    manufacturer, model_code,
+                    result["danfoss_code"], result["confidence"],
+                )
+            return result
+        except Exception as e:
+            logger.warning("Code translation failed for %s %s: %s", manufacturer, model_code, e)
+            return {}
+
     def find_my_company_equivalents(
         self,
         competitor: HydraulicProduct,
@@ -209,8 +235,57 @@ class LookupTools:
         Uses semantic search + spec comparison + reranking.
         Falls back to category-based DB search if semantic search yields nothing."""
 
+        # --- Priority 2: structural code decode -> construct Danfoss code ----------
+        translation = {}
+        if competitor.company and competitor.model_code:
+            translation = self.translate_competitor_code(
+                competitor.model_code, competitor.company
+            )
+            # If we constructed a code, try to find it directly in the DB
+            constructed = translation.get("danfoss_code")
+            if constructed:
+                direct_hits = self.db.fuzzy_lookup_model(
+                    constructed, company=my_company_name, threshold=85, limit=3
+                )
+                if direct_hits:
+                    match_results = []
+                    for candidate, _score in direct_hits:
+                        confidence, breakdown = self.db.spec_comparison(
+                            competitor, candidate, semantic_score=0.9
+                        )
+                        # Boost confidence: structural translation is high-quality
+                        confidence = min(1.0, confidence + 0.1)
+                        match = MatchResult(
+                            my_company_product=candidate,
+                            competitor_product=competitor,
+                            confidence_score=round(confidence, 3),
+                            score_breakdown=breakdown,
+                            meets_threshold=confidence >= CONFIDENCE_THRESHOLD,
+                        )
+                        match.my_company_product.extra_specs = (
+                            match.my_company_product.extra_specs or {}
+                        )
+                        match.my_company_product.extra_specs["_translation_explanation"] = (
+                            translation.get("explanation", "")
+                        )
+                        match_results.append(match)
+
+                    if match_results:
+                        match_results.sort(key=lambda m: m.confidence_score, reverse=True)
+                        logger.info(
+                            "Code translation found %d direct DB hits for constructed code %s",
+                            len(match_results), constructed,
+                        )
+                        return match_results[:top_k]
+
+        # --- Priority 3: semantic search + spec comparison -------------------------
         # Build query from competitor product
         query = self.vs._build_indexable_text(competitor)
+        # Enrich query with translation result (if available)
+        if translation.get("danfoss_code"):
+            query += f" Danfoss equivalent: {translation['danfoss_code']}"
+        if translation.get("danfoss_spool"):
+            query += f" Danfoss spool: {translation['danfoss_spool']}"
 
         # Enrich query with cross-reference series hint (additive, not replacing)
         xref_hints = self.db.lookup_series_by_competitor_prefix(

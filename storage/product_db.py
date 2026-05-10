@@ -495,6 +495,14 @@ class ProductDB:
             ))
             self.conn.commit()
 
+    def get_all_confirmed_equivalents(self) -> list[dict]:
+        """Return all confirmed equivalents as dicts."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT * FROM confirmed_equivalents ORDER BY created_at DESC"
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
     # ── Feedback ──────────────────────────────────────────────────────
 
     def store_feedback(

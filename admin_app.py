@@ -574,7 +574,6 @@ def confirm_equivalent(competitor_code, my_company_code, competitor_company):
     """Manually confirm an equivalent pairing."""
     if not competitor_code or not my_company_code:
         return "Both competitor and Danfoss model codes are required."
-    # Truncate inputs (Fix #9)
     db.insert_confirmed_equivalent(
         competitor_code=competitor_code.strip()[:MAX_MODEL_CODE_LEN],
         competitor_company=(competitor_company.strip() if competitor_company else "Unknown")[:MAX_COMPANY_NAME_LEN],
@@ -582,6 +581,77 @@ def confirm_equivalent(competitor_code, my_company_code, competitor_company):
         confirmed_by="admin",
     )
     return f"Confirmed: {competitor_code.strip()} -> {my_company_code.strip()}"
+
+
+def import_crossref_csv(file_obj) -> str:
+    """Bulk-import confirmed cross-references from a CSV file.
+
+    Expected CSV columns (case-insensitive, order flexible):
+        competitor_code    — competitor model code (required)
+        competitor_company — competitor name (required)
+        danfoss_code       — Danfoss/Vickers model code (required)
+        notes              — optional notes
+
+    Returns a status message.
+    """
+    if file_obj is None:
+        return "No file uploaded."
+    try:
+        df = pd.read_csv(file_obj.name if hasattr(file_obj, "name") else file_obj)
+    except Exception as e:
+        return f"Could not read CSV: {e}"
+
+    # Normalise column names
+    df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+
+    required = {"competitor_code", "competitor_company", "danfoss_code"}
+    missing = required - set(df.columns)
+    if missing:
+        return (
+            f"CSV is missing required columns: {', '.join(sorted(missing))}.\n"
+            f"Found: {', '.join(df.columns)}"
+        )
+
+    inserted = 0
+    errors = []
+    for i, row in df.iterrows():
+        comp_code = str(row.get("competitor_code", "")).strip()[:MAX_MODEL_CODE_LEN]
+        comp_company = str(row.get("competitor_company", "")).strip()[:MAX_COMPANY_NAME_LEN]
+        danfoss_code = str(row.get("danfoss_code", "")).strip()[:MAX_MODEL_CODE_LEN]
+        notes = str(row.get("notes", "")).strip()[:500]
+
+        if not comp_code or not comp_company or not danfoss_code:
+            errors.append(f"Row {i+2}: missing required field(s) — skipped")
+            continue
+        try:
+            db.insert_confirmed_equivalent(
+                competitor_code=comp_code,
+                competitor_company=comp_company,
+                my_company_code=danfoss_code,
+                confirmed_by=f"csv_import:{notes}" if notes else "csv_import",
+            )
+            inserted += 1
+        except Exception as e:
+            errors.append(f"Row {i+2}: {e}")
+
+    msg = f"Imported {inserted} cross-reference(s)."
+    if errors:
+        msg += f"\n{len(errors)} error(s):\n" + "\n".join(errors[:10])
+    return msg
+
+
+def get_confirmed_equivalents() -> pd.DataFrame:
+    """Load confirmed equivalents for display."""
+    rows = db.get_all_confirmed_equivalents() if hasattr(db, "get_all_confirmed_equivalents") else []
+    if not rows:
+        return pd.DataFrame(columns=["Competitor Code", "Competitor Company", "Danfoss Code", "Confirmed By", "Date"])
+    return pd.DataFrame([{
+        "Competitor Code": r.get("competitor_model_code", ""),
+        "Competitor Company": r.get("competitor_company", ""),
+        "Danfoss Code": r.get("my_company_model_code", ""),
+        "Confirmed By": r.get("confirmed_by", ""),
+        "Date": r.get("created_at", ""),
+    } for r in rows])
 
 
 # ── Settings Tab ──────────────────────────────────────────────────────
@@ -960,6 +1030,69 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
                 delete_all_products, outputs=[delete_status]
             )
 
+        # ── Cross-Reference Tab ───────────────────────────────────
+        with gr.Tab("Cross-References"):
+            gr.Markdown("### Confirmed Equivalents")
+            gr.Markdown(
+                "These are the **highest-priority** matches — used before any AI matching. "
+                "When a distributor enters a competitor code that appears here, this result "
+                "is returned directly with no further processing."
+            )
+
+            crossref_table = gr.Dataframe(
+                label="Confirmed Equivalents",
+                value=get_confirmed_equivalents(),
+                interactive=False,
+            )
+            crossref_refresh_btn = gr.Button("Refresh")
+            crossref_refresh_btn.click(get_confirmed_equivalents, outputs=[crossref_table])
+
+            gr.Markdown("### Add Single Equivalent")
+            with gr.Row():
+                confirm_comp_code = gr.Textbox(
+                    label="Competitor Model Code", max_lines=1,
+                    placeholder="e.g. 4WE6E62/EG24N9K4",
+                )
+                confirm_comp_company = gr.Textbox(
+                    label="Competitor Company", max_lines=1,
+                    placeholder="e.g. Bosch Rexroth",
+                )
+                confirm_my_code = gr.Textbox(
+                    label="Vickers by Danfoss Code", max_lines=1,
+                    placeholder="e.g. DG4V-3-2C-M-U-H7-60",
+                )
+                confirm_eq_btn = gr.Button("Add", variant="primary")
+                confirm_eq_status = gr.Textbox(label="Status")
+
+            confirm_eq_btn.click(
+                confirm_equivalent,
+                inputs=[confirm_comp_code, confirm_my_code, confirm_comp_company],
+                outputs=[confirm_eq_status],
+            )
+            confirm_eq_btn.click(get_confirmed_equivalents, outputs=[crossref_table])
+
+            gr.Markdown("### Bulk Import from CSV")
+            gr.Markdown(
+                "Upload a CSV with columns: `competitor_code`, `competitor_company`, "
+                "`danfoss_code`, `notes` (optional). "
+                "One row per cross-reference. Column names are case-insensitive."
+            )
+            with gr.Row():
+                crossref_csv_file = gr.File(
+                    label="Cross-Reference CSV",
+                    file_types=[".csv"],
+                    type="filepath",
+                )
+                crossref_import_btn = gr.Button("Import CSV", variant="primary")
+                crossref_import_status = gr.Textbox(label="Import Status", lines=5)
+
+            crossref_import_btn.click(
+                import_crossref_csv,
+                inputs=[crossref_csv_file],
+                outputs=[crossref_import_status],
+            )
+            crossref_import_btn.click(get_confirmed_equivalents, outputs=[crossref_table])
+
         # ── Feedback Review Tab ───────────────────────────────────
         with gr.Tab("Feedback Review"):
             feedback_table = gr.Dataframe(
@@ -970,20 +1103,6 @@ with gr.Blocks(title="ProductMatchPro - Admin Console") as admin_ui:
             refresh_feedback_btn = gr.Button("Refresh")
             refresh_feedback_btn.click(
                 get_feedback, outputs=[feedback_table]
-            )
-
-            gr.Markdown("### Manually Confirm an Equivalent")
-            with gr.Row():
-                confirm_comp_code = gr.Textbox(label="Competitor Model Code", max_lines=1)
-                confirm_comp_company = gr.Textbox(label="Competitor Company", max_lines=1)
-                confirm_my_code = gr.Textbox(label="Danfoss Model Code", max_lines=1)
-                confirm_eq_btn = gr.Button("Confirm Equivalent", variant="primary")
-                confirm_eq_status = gr.Textbox(label="Status")
-
-            confirm_eq_btn.click(
-                confirm_equivalent,
-                inputs=[confirm_comp_code, confirm_my_code, confirm_comp_company],
-                outputs=[confirm_eq_status],
             )
 
         # ── Settings Tab ──────────────────────────────────────────

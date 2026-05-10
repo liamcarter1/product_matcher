@@ -1,0 +1,42 @@
+{
+  "_comment": "Connector/plug code translations for hydraulic valve cross-referencing. Maps manufacturer-specific connector codes to normalized form and Danfoss DG4V equivalents.",
+  "by_manufacturer": {
+    "Bosch Rexroth": {
+      "style": {
+        "E":  {"normalized": "DIN_central",     "description": "Central plug (one connector for both solenoids)"},
+        "A":  {"normalized": "DIN_individual_a", "description": "Individual connector on solenoid-A side"},
+        "B":  {"normalized": "DIN_individual_b", "description": "Individual connector on solenoid-B side"}
+      },
+      "connector": {
+        "K4":  {"normalized": "DIN43650_A_metric", "description": "DIN 43650 Form A metric thread"},
+        "K20": {"normalized": "DIN43650_A_inch",   "description": "DIN 43650 Form A inch thread"},
+        "":    {"normalized": "bare_leads",         "description": "Bare leads / standard (no DIN plug)"}
+      },
+      "override": {
+        "N9": {"normalized": "mech_push",   "description": "Mechanical push-type override"},
+        "NW": {"normalized": "wp_push",     "description": "Waterproof push-type override"},
+        "NH": {"normalized": "hand_lever",  "description": "Hand lever override"},
+        "NF": {"normalized": "foot_pedal",  "description": "Foot pedal override"},
+        "":   {"normalized": "none",        "description": "No manual override"}
+      }
+    },
+    "Parker": {
+      "style": {
+        "C":  {"normalized": "DIN_central",      "description": "Central plug"},
+        "S":  {"normalized": "DIN_individual",   "description": "Individual solenoid connectors"}
+      }
+    }
+  },
+  "normalized_to_danfoss_dgv": {
+    "DIN_central":      "U",
+    "DIN_individual_a": "U",
+    "DIN_individual_b": "U",
+    "bare_leads":       "L",
+    "DIN43650_A_metric": "U",
+    "DIN43650_A_inch":  "U"
+  },
+  "notes": {
+    "danfoss_dgv_connectors": "DG4V-3 connector codes: U=standard DIN plug (most common), L=lead wires, D=alternative DIN variant. Confirm from Vickers by Danfoss user guide after upload.",
+    "override_handling": "Danfoss DG4V manual override is a separate suffix at the end of the model code. If the competitor has an override, append '-M' to the Danfoss code (consult user guide). Default is no override."
+  }
+}

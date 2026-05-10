@@ -1,0 +1,38 @@
+{
+  "_comment": "Voltage code translations for hydraulic valve cross-referencing. Maps manufacturer-specific voltage codes to normalized form and Danfoss DG4V equivalents. Add entries when a new manufacturer format is encountered.",
+  "by_manufacturer": {
+    "Bosch Rexroth": {
+      "G12":  {"normalized": "12VDC",  "dc": true,  "volts": 12},
+      "G24":  {"normalized": "24VDC",  "dc": true,  "volts": 24},
+      "G48":  {"normalized": "48VDC",  "dc": true,  "volts": 48},
+      "W110": {"normalized": "110VAC", "dc": false, "volts": 110, "hz": "50/60"},
+      "W230": {"normalized": "230VAC", "dc": false, "volts": 230, "hz": "50/60"}
+    },
+    "Parker": {
+      "D12":  {"normalized": "12VDC",  "dc": true,  "volts": 12},
+      "D24":  {"normalized": "24VDC",  "dc": true,  "volts": 24},
+      "A110": {"normalized": "110VAC", "dc": false, "volts": 110, "hz": "50/60"},
+      "A230": {"normalized": "230VAC", "dc": false, "volts": 230, "hz": "50/60"}
+    },
+    "ATOS": {
+      "12":   {"normalized": "12VDC",  "dc": true,  "volts": 12},
+      "24":   {"normalized": "24VDC",  "dc": true,  "volts": 24},
+      "110":  {"normalized": "110VAC", "dc": false, "volts": 110, "hz": "50"},
+      "230":  {"normalized": "230VAC", "dc": false, "volts": 230, "hz": "50"}
+    }
+  },
+  "normalized_to_danfoss_dgv": {
+    "12VDC":  "G7",
+    "24VDC":  "H7",
+    "48VDC":  "J7",
+    "110VAC": "A7",
+    "115VAC": "B7",
+    "220VAC": "D7",
+    "230VAC": "E7",
+    "240VAC": "F7"
+  },
+  "notes": {
+    "danfoss_dgv_codes": "DG4V-3 voltage suffix codes: G7=12VDC, H7=24VDC, J7=48VDC, A7=110VAC 50Hz, B7=115VAC 60Hz, D7=220VAC 50Hz, E7=230VAC 50/60Hz, F7=240VAC 50Hz",
+    "fallback": "If a competitor voltage code is not in by_manufacturer, try parsing it as a bare number (e.g. '24' -> 24VDC) or common suffix (e.g. '24VDC' already normalized)"
+  }
+}
