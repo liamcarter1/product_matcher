@@ -8,7 +8,7 @@ import logging
 
 from models import OrderingCodeDefinition
 from tools.llm_client import call_llm_json, TIER_HIGH
-from tools.agents.base import render_pdf_pages, build_image_block, build_text_block, get_skill_context
+from tools.agents.base import render_pdf_pages, build_image_block, build_text_block, get_skill_context, get_manufacturer_context
 from tools.parse_tools import (
     _select_ordering_code_text,
     _parse_ordering_code_response,
@@ -120,9 +120,20 @@ The Danfoss-branded DG4V user guide has a DIFFERENT position-4 structure from th
   A (spring-offset), D (detent). DO NOT apply Vickers logic to Danfoss guides.
 - Note: "Eaton" hydraulics no longer exists — Danfoss acquired Eaton's hydraulics in 2021 and
   now sells these products as "Vickers by Danfoss". Treat any "Eaton" DG4V references as Vickers by Danfoss.
-- LH build (left-hand build): in Danfoss guides, LH build is a SUFFIX on the spool code itself
-  (e.g. "2AL" = spool 2A, LH build), NOT a separate position segment.
-- There is NO standalone "A", "B", or "D" position immediately after the spool type in Danfoss guides.
+- LH build and spring-offset direction are EMBEDDED in the Danfoss spool type code itself.
+  The authoritative Danfoss spring/build suffixes are:
+    A  = Spring offset, end-to-end (RH build)   e.g. 2A
+    AL = Spring offset, end-to-end, LH build     e.g. 2AL
+    B  = Spring offset, end-to-centre (RH build) e.g. 2B
+    BL = Spring offset, end-to-centre, LH build  e.g. 2BL
+    C  = Spring centred                          e.g. 2C
+    N  = No spring, detented                     e.g. 2N
+  The ordering code page only lists a SUBSET of spool codes — the system automatically
+  expands each base number to all six suffix combinations. Just extract whatever codes
+  you see in the guide (e.g. "2A", "2C", "22A") — the system handles the rest.
+- Do NOT create a separate segment with options "A", "L", "AL", "B", "BL", "C", "N",
+  or "" adjacent to the spool_type segment. Section 5 of the ordering code page explains
+  what the suffix letters mean — that is documentation, NOT an additional segment.
 - The segment immediately after spool_type in Danfoss DG4V is "-M-" (fixed).
 - Example: DG4V-3-2C-M-U-H7-60 = series/size/spool/M-fixed/connector/voltage/design.
 
@@ -161,7 +172,9 @@ CODE TEMPLATE PARENTHESES — FORBIDDEN: NEVER use parentheses in the code_templ
 Optional segments use a no-code option (code=""), not parentheses around the placeholder.
 
 DANFOSS DG4V: position after spool_type = fixed "M" (not C/A/D spring-return codes from Vickers guides).
-LH build is the "L" suffix on the spool code itself (e.g. "2AL"), not a separate segment.
+Spring/build suffixes (A, AL, B, BL, C, N) are embedded in the spool code itself (e.g. "2AL", "2C").
+The system auto-expands spool codes to all suffix combinations — just extract what the guide shows.
+Do NOT create a separate suffix segment adjacent to spool_type.
 
 {spool_reference_section}
 
@@ -207,10 +220,15 @@ def extract_ordering_code_text(
         text=selected_text,
     )
 
+    # Prepend manufacturer-specific skill context (loaded at call time — company is
+    # only known when a PDF is being processed, not at module import time)
+    mfr_ctx = get_manufacturer_context(company)
+    system_prompt = (mfr_ctx + "\n\n" if mfr_ctx else "") + _SYSTEM_PROMPT
+
     try:
         data = call_llm_json(
             TIER_HIGH,
-            _SYSTEM_PROMPT,
+            system_prompt,
             user_prompt,
             max_tokens=16384,
         )
@@ -287,10 +305,13 @@ def extract_ordering_code_vision(
     for _, img_b64 in rendered:
         content.append(build_image_block(img_b64, "image/png"))
 
+    mfr_ctx = get_manufacturer_context(company)
+    system_prompt = (mfr_ctx + "\n\n" if mfr_ctx else "") + _SYSTEM_PROMPT
+
     try:
         data = call_llm_json(
             TIER_HIGH,
-            _SYSTEM_PROMPT,
+            system_prompt,
             content,
             vision=True,
             max_tokens=16384,

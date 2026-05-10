@@ -749,8 +749,11 @@ DANFOSS DG4V ORDERING CODE — MANUFACTURER-SPECIFIC RULES:
 - Vickers by Danfoss DG4V: position after spool = spring-return type (C/A/D). DO NOT apply Vickers
   C/A/D logic to Danfoss-branded DG4V guides.
   (Note: "Eaton" hydraulics = now "Vickers by Danfoss" — acquired 2021. Same product line.)
-- In Danfoss guides, LH build is the terminal "L" suffix on the spool code itself (e.g. "2AL"),
-  NOT a separate segment. There is no standalone "A", "B", or "D" segment after the spool type.
+- In Danfoss guides, LH build and spring-offset are EMBEDDED in the spool code (e.g. "2A",
+  "2AL") — they are NOT a separate segment. Do NOT create any segment with options only
+  from {"A", "L", "AL", ""} adjacent to the spool_type segment for Danfoss guides.
+  The ordering code page may explain what A and L mean — that is documentation of the
+  spool codes, not a new segment. The segment after spool_type is fixed "M".
 - Example correct Danfoss code: DG4V-3-2C-M-U-H7-60 (spool=2C, M=fixed, U=connector, H7=24VDC, 60=design)
 
 Return a JSON object: {{"ordering_codes": [...]}}
@@ -1928,6 +1931,154 @@ def _classify_spool_pages(
     return classifications
 
 
+# Authoritative Danfoss spring/build suffixes embedded in the spool type code.
+# Each entry: (suffix, description)
+_DANFOSS_SPRING_SUFFIXES = [
+    ('A',  'Spring offset, end-to-end (RH build)'),
+    ('AL', 'Spring offset, end-to-end, LH build'),
+    ('B',  'Spring offset, end-to-centre (RH build)'),
+    ('BL', 'Spring offset, end-to-centre, LH build'),
+    ('C',  'Spring centred'),
+    ('N',  'No spring, detented'),
+]
+
+# Segment name keywords that indicate a phantom spring-return / hand-build segment
+_BUILD_SEGMENT_KEYWORDS = {
+    'hand', 'build', 'spring', 'offset', 'return', 'actuator_config',
+    'hand_build', 'spring_return', 'spring_offset',
+}
+
+# Option codes that appear only in phantom build segments (not real spool codes)
+_PHANTOM_BUILD_ONLY_CODES = {'A', 'L', 'AL', ''}
+
+_DANFOSS_SPOOL_PATTERN = re.compile(r'^(\d{1,2})([A-Za-z]{0,2})$')
+
+
+def _is_danfoss_numeric_spool_code(code: str) -> bool:
+    """Return True if code looks like a Danfoss numeric spool code (1-2 digits + optional suffix)."""
+    return bool(_DANFOSS_SPOOL_PATTERN.match(code.strip()))
+
+
+def _resolve_danfoss_spool_build_segments(segments: list[OrderingCodeSegment]) -> list[OrderingCodeSegment]:
+    """Expand Danfoss spool codes to all spring/build suffix combinations.
+
+    Danfoss DG4V spool codes embed the spring/build suffix directly:
+      2A  = spring offset, end-to-end, RH
+      2AL = spring offset, end-to-end, LH
+      2B  = spring offset, end-to-centre, RH
+      2BL = spring offset, end-to-centre, LH
+      2C  = spring centred
+      2N  = no spring, detented
+
+    The LLM typically sees only a subset of spool codes in the table (e.g. '2A', '2C')
+    and sometimes also extracts a phantom separate segment for A/AL/L/"".
+
+    This function:
+    1. Finds the spool_type segment and checks if it contains Danfoss numeric codes.
+    2. Extracts unique base numbers from all option codes (strips trailing letters).
+    3. Generates ALL 6 suffix combinations for each base number.
+    4. Replaces the spool segment options with the fully expanded set.
+    5. Suppresses any adjacent phantom build segment (now redundant).
+
+    Does NOT apply to Rexroth (single uppercase letters: E, G, H) or
+    Parker (3-digit codes: 001, 002).
+    """
+    # --- Find spool segment ---------------------------------------------------
+    spool_seg = None
+    spool_idx = None
+    for idx, seg in enumerate(segments):
+        if seg.segment_name == "spool_type" or any(
+            o.get("maps_to_field") == "spool_type" for o in seg.options
+        ):
+            spool_seg = seg
+            spool_idx = idx
+            break
+
+    if spool_seg is None:
+        return segments
+
+    # --- Check if this is Danfoss-style numeric spool codes ------------------
+    spool_codes = [o.get("code", "").strip() for o in spool_seg.options if o.get("code", "").strip()]
+    numeric_codes = [c for c in spool_codes if _is_danfoss_numeric_spool_code(c)]
+
+    if not numeric_codes:
+        # Not Danfoss numeric style — nothing to expand (Rexroth letters, Parker 3-digits, etc.)
+        return segments
+
+    # --- Extract unique base numbers -----------------------------------------
+    base_numbers: dict[str, dict] = {}  # base -> first matching option dict (for field/value hints)
+    for opt in spool_seg.options:
+        code = opt.get("code", "").strip()
+        if not code or not _is_danfoss_numeric_spool_code(code):
+            continue
+        m = _DANFOSS_SPOOL_PATTERN.match(code)
+        num = m.group(1)
+        if num not in base_numbers:
+            base_numbers[num] = opt
+
+    if not base_numbers:
+        return segments
+
+    # --- Generate expanded options --------------------------------------------
+    expanded_options = []
+    for num in sorted(base_numbers.keys(), key=int):
+        ref_opt = base_numbers[num]
+        for suffix, description in _DANFOSS_SPRING_SUFFIXES:
+            expanded_options.append({
+                "code": f"{num}{suffix}",
+                "description": f"Spool {num} — {description}",
+                "maps_to_field": ref_opt.get("maps_to_field", "spool_type"),
+                "maps_to_value": f"{num}{suffix}",
+            })
+
+    original_codes = sorted(c for c in spool_codes if c)
+    expanded_codes = [o["code"] for o in expanded_options]
+    logger.info(
+        "Expanded Danfoss spool segment: %d base numbers %s -> %d codes %s",
+        len(base_numbers), sorted(base_numbers.keys()), len(expanded_codes), expanded_codes,
+    )
+    print(f"[DEBUG] Danfoss spool expansion: bases={sorted(base_numbers.keys())} "
+          f"original={original_codes} -> expanded={expanded_codes}")
+
+    spool_seg.options = expanded_options
+    spool_seg.is_fixed = False
+
+    # --- Suppress adjacent phantom build segment (now absorbed) ---------------
+    result = []
+    for idx, seg in enumerate(segments):
+        if idx == spool_idx:
+            result.append(seg)
+            continue
+
+        # Is this segment adjacent to the spool segment (within 2 positions)?
+        if abs(seg.position - spool_seg.position) > 2:
+            result.append(seg)
+            continue
+
+        # Is every option code in the phantom-only set?
+        option_codes = {o.get("code", "").strip().upper() for o in seg.options}
+        if not option_codes or not option_codes.issubset(_PHANTOM_BUILD_ONLY_CODES):
+            result.append(seg)
+            continue
+
+        # Segment name confirms it's a build/spring segment, OR it's very narrow (≤ 3 options)
+        name_lower = seg.segment_name.lower()
+        name_is_build = any(kw in name_lower for kw in _BUILD_SEGMENT_KEYWORDS)
+        if name_is_build or len(option_codes) <= 3:
+            seg.is_fixed = True
+            seg.options = [{"code": "", "description": "no code (absorbed into spool expansion)",
+                            "maps_to_field": seg.segment_name, "maps_to_value": ""}]
+            logger.info(
+                "Absorbed phantom build segment '%s' (pos %d) into spool expansion",
+                seg.segment_name, seg.position,
+            )
+            print(f"[DEBUG] Absorbed phantom build segment '{seg.segment_name}' "
+                  f"(pos {seg.position}) — suffixes now covered by spool expansion")
+        result.append(seg)
+
+    return result
+
+
 def _parse_ordering_code_response(
     raw_codes: list[dict], company: str, category: str,
 ) -> list[OrderingCodeDefinition]:
@@ -1973,6 +2124,10 @@ def _parse_ordering_code_response(
                     separator_before=seg_data.get("separator_before", ""),
                     options=seg_data.get("options", []),
                 ))
+
+            # Expand Danfoss numeric spool codes to all spring/build suffix combinations
+            # (A/AL/B/BL/C/N) and absorb any phantom build segment the LLM extracted.
+            segments = _resolve_danfoss_spool_build_segments(segments)
 
             definition = OrderingCodeDefinition(
                 company=company,

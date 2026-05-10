@@ -117,9 +117,35 @@ body** but use **different ordering code structures** at position 4:
 position 4 MUST be extracted as `is_fixed=true` with a single option `code="M"`.
 Do **NOT** add `A`, `B`, `C`, or `D` as options for position 4 in Danfoss guides.
 
-**LH build** in Danfoss guides is expressed as a terminal `L` appended to the spool
-code itself (e.g. `2AL`, `22AL`) — it is NOT a separate segment at any position.
-There is no standalone `A` or `L` segment immediately after the spool type.
+**LH build and spring-offset direction are embedded in the spool type code — they are
+NOT separate segments.** The spool type segment options already contain the full code.
+
+### Danfoss authoritative spring/build suffix table
+
+Every Danfoss numeric spool base number (1–2 digits, e.g. `2`, `8`, `22`) can be
+combined with exactly six suffixes. These suffixes encode the spring type AND hand-build:
+
+| Suffix | Full spool code example | Meaning |
+|--------|------------------------|---------|
+| `A`    | `2A`                   | Spring offset, end-to-end (RH build) |
+| `AL`   | `2AL`                  | Spring offset, end-to-end, LH build |
+| `B`    | `2B`                   | Spring offset, end-to-centre (RH build) |
+| `BL`   | `2BL`                  | Spring offset, end-to-centre, LH build |
+| `C`    | `2C`                   | Spring centred |
+| `N`    | `2N`                   | No spring, detented |
+
+The ordering code user guide typically only shows a **subset** of spool codes in its
+ordering code table (e.g. `2A`, `2C`, `22A`). The configurator automatically expands
+each base number to all six combinations. You do NOT need to list all combinations
+in your JSON response — extract whatever codes appear in the guide; the system will
+generate the full set.
+
+**Do NOT create a separate segment** with options `A`, `AL`, `B`, `BL`, `C`, `N`,
+`L`, or `""` adjacent to the spool_type segment for Danfoss guides. The ordering
+code page may have a sub-table explaining what each suffix means — this is
+documentation, not a separate segment. If you see suffixes explained in section 5
+of the ordering code page, those suffixes are embedded in the spool type code itself;
+no additional segment is needed.
 
 Worked code breakdown for `DG4V-3-2C-M-U-H7-60`:
 

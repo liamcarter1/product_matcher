@@ -7,7 +7,7 @@ Text analysis uses TIER_MID (Sonnet), vision uses TIER_HIGH (Opus).
 import logging
 
 from tools.llm_client import call_llm_json, TIER_MID, TIER_HIGH
-from tools.agents.base import render_pdf_pages, build_image_block, build_text_block, get_skill_context
+from tools.agents.base import render_pdf_pages, build_image_block, build_text_block, get_skill_context, get_manufacturer_context
 from tools.parse_tools import compute_canonical_pattern, _deduplicate_spools
 
 logger = logging.getLogger(__name__)
@@ -87,10 +87,13 @@ def analyze_spool_text(text: str, company: str, few_shot_examples: list[dict] | 
 
     user_prompt = few_shot_section + _TEXT_USER_PROMPT.format(company=company, text=text)
 
+    mfr_ctx = get_manufacturer_context(company)
+    system_prompt = (mfr_ctx + "\n\n" if mfr_ctx else "") + _TEXT_SYSTEM_PROMPT
+
     try:
         data = call_llm_json(
             TIER_MID,
-            _TEXT_SYSTEM_PROMPT,
+            system_prompt,
             user_prompt,
         )
 
@@ -291,10 +294,13 @@ def analyze_spool_vision(
             batch_idx + 1, total_batches, batch_page_indices, len(batch),
         )
 
+        mfr_ctx = get_manufacturer_context(company)
+        vision_system_prompt = (mfr_ctx + "\n\n" if mfr_ctx else "") + _VISION_SYSTEM_PROMPT
+
         try:
             data = call_llm_json(
                 TIER_HIGH,
-                _VISION_SYSTEM_PROMPT,
+                vision_system_prompt,
                 content,
                 vision=True,
                 max_tokens=max_tokens_per_batch,
