@@ -107,6 +107,30 @@ SEGMENT NAMING RULES — CRITICAL:
 - Spool type/valve function segments MUST use maps_to_field: "spool_type"
 - The total number of segments MUST match the total number of positions shown in the breakdown diagram
 
+CODE TEMPLATE PARENTHESES — FORBIDDEN:
+NEVER use parentheses in the code_template string. Model codes do NOT contain parentheses.
+If a segment is optional (default = "no code"), represent it with one option having code="" (empty string).
+Correct:   "{01}{02}{03}{04}-{05}-{06}-{07}"
+WRONG:     "{01}{02}{03}({04})-{05}-{06}-{07}"
+
+DANFOSS DG4V ORDERING CODE — MANUFACTURER-SPECIFIC RULES:
+The Danfoss-branded DG4V user guide has a DIFFERENT position-4 structure from the Vickers/Eaton guide:
+- Danfoss DG4V: position 4 = "M" — FIXED, always present, is_fixed=true, single option code="M"
+- Vickers/Eaton DG4V: position 4 = spring-return type — variable with options C (spring-centred),
+  A (spring-offset), D (detent). DO NOT apply Vickers logic to Danfoss guides.
+- LH build (left-hand build): in Danfoss guides, LH build is a SUFFIX on the spool code itself
+  (e.g. "2AL" = spool 2A, LH build), NOT a separate position segment.
+- There is NO standalone "A", "B", or "D" position immediately after the spool type in Danfoss guides.
+- The segment immediately after spool_type in Danfoss DG4V is "-M-" (fixed).
+- Example: DG4V-3-2C-M-U-H7-60 = series/size/spool/M-fixed/connector/voltage/design.
+
+BOSCH REXROTH SOLENOID POSITION LETTER:
+In Rexroth 4WE6 ordering codes, the solenoid-side indicator ("A" for solenoid-a side,
+"B" for solenoid-b side) is a SEPARATE segment from the spool letter. These appear after
+the "/" separator, not immediately after the spool type. Example: "4WE6E62/EG24N9K4" —
+the style/plug segment (position 7, code "E" = central plug) is AFTER the slash, not part of
+the spool type "E" at position 4.
+
 {spool_reference_section}
 
 Text:
@@ -130,6 +154,12 @@ Each option needs: code, description, maps_to_field (from: {valid_fields} or cus
 
 CRITICAL: Spool type segments map to maps_to_field: "spool_type". Include ALL spool options (typically 10-30+).
 EVERY segment MUST have segment_name and maps_to_field. NEVER skip positions.
+
+CODE TEMPLATE PARENTHESES — FORBIDDEN: NEVER use parentheses in the code_template string.
+Optional segments use a no-code option (code=""), not parentheses around the placeholder.
+
+DANFOSS DG4V: position after spool_type = fixed "M" (not C/A/D spring-return codes from Vickers guides).
+LH build is the "L" suffix on the spool code itself (e.g. "2AL"), not a separate segment.
 
 {spool_reference_section}
 

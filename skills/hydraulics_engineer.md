@@ -87,6 +87,45 @@ For other DG4V suffixes you may encounter:
 | 9 | N9 | Manual override option |
 | 10 | K4 | DIN 43650 connector type |
 
+### Code template format — parentheses FORBIDDEN
+
+Model codes never contain parentheses. The `code_template` string must use only
+`{01}`, `{02}`, … placeholders plus literal separators (dash, slash, dot).
+
+**WRONG**: `{01}{02}{03}({04})-{05}-{06}-{07}` — produces `(A)` or `()` in final codes.
+**CORRECT**: `{01}{02}{03}{04}-{05}-{06}-{07}` with an option `code=""` for the no-code case.
+
+### Danfoss DG4V vs Vickers/Eaton DG4V — position 4 difference
+
+The Vickers-branded and Danfoss-branded DG4V user guides describe the **same valve
+body** but use **different ordering code structures** at position 4:
+
+| Position 4 | Vickers/Eaton guide | Danfoss guide |
+|---|---|---|
+| Code | `C`, `A`, or `D` (variable) | `M` (fixed) |
+| Meaning | Spring return type: C = spring-centred, A = spring-offset, D = detent | Modifications identifier — always present |
+| is_fixed | false (3 options) | **true** (single option) |
+
+**Extraction rule**: If you are processing a **Danfoss-branded** DG4V user guide,
+position 4 MUST be extracted as `is_fixed=true` with a single option `code="M"`.
+Do **NOT** add `A`, `B`, `C`, or `D` as options for position 4 in Danfoss guides.
+
+**LH build** in Danfoss guides is expressed as a terminal `L` appended to the spool
+code itself (e.g. `2AL`, `22AL`) — it is NOT a separate segment at any position.
+There is no standalone `A` or `L` segment immediately after the spool type.
+
+Worked code breakdown for `DG4V-3-2C-M-U-H7-60`:
+
+| Pos | Code | is_fixed | Segment name |
+|---|---|---|---|
+| 1 | `DG4V` | true | series |
+| 2 | `3` | true | valve_size |
+| 3 | `2C` | false | spool_type (many options: 2A, 2AL, 2C, 0A, 8C, 6C, …) |
+| 4 | `M` | **true** | model_designator |
+| 5 | `U` | false | coil_connector (U, D, L, …) |
+| 6 | `H7` | false | coil_voltage (H7=24VDC, G7=12VDC, A7=110VAC, …) |
+| 7 | `60` | false | design_number (60, 61, 62 — interchangeable) |
+
 ### Manufacturer layout differences
 
 - **Bosch Rexroth** (e.g. 4WE6, RE 23178): text-rich, highly structured tables.
@@ -235,10 +274,14 @@ Rexroth-side identification.
   per RE 23178 footnote 2, with explicit pressure-intensification warning).
 - **`46` suffix** (e.g. `C46`, `D46`) = special-version variants. Per RE 23178
   footnote 3: only with version SO407 and OF.
-- **Letter + position**: ordering codes append a position letter (`A` for spool
-  position "a", `B` for position "b") to the spool letter, e.g. `..EA..` or
-  `..E73A..`. The position letter is part of the full ordering code, not part of
-  the spool functional identity.
+- **Solenoid position letter** (e.g. `A` in `EA`, `B` in `EB`): in ordering codes
+  that use individual solenoid connectors, a trailing `A` or `B` after the spool
+  letter indicates which solenoid side the connector is on. This is a **separate
+  segment** (typically after the `/` separator), not part of the spool functional
+  identity. In the template it is its own position with options `A`, `B`, `E`
+  (central plug) etc. — do NOT merge it into the spool_type segment.
+  Example: `4WE6E62/EG24N9K4` — spool=`E` (pos 4), style=`E`-central-plug (pos 7
+  after `/`). The pos-7 `E` is the connector style, not the spool type.
 
 ### Rexroth-internal duplicates
 
