@@ -5,6 +5,9 @@ data/*.db
 data/*.npz
 data/*.json
 !data/spool_seed.json
+!data/voltage_translations.json
+!data/connector_translations.json
+!data/danfoss_code_templates.json
 data/*.csv
 !data/.gitkeep
 .env

@@ -1,0 +1,60 @@
+{
+  "_comment": "Danfoss DG4V ordering code templates for code construction. Manually authored from Vickers by Danfoss user guides. Update connector/voltage codes after ingesting the official DG4V-3 user guide PDF.",
+  "series": {
+    "DG4V-3": {
+      "description": "4-way directional valve, CETOP 3 / NG6 / ISO 4401-03",
+      "valve_size": "NG6",
+      "mounting": "ISO 4401-03",
+      "max_pressure_bar": 315,
+      "code_template": "DG4V-{size}-{spool}-M-{connector}-{voltage}-{design}",
+      "segments": {
+        "series":     {"fixed": true,  "value": "DG4V"},
+        "size":       {"fixed": true,  "value": "3"},
+        "spool":      {"fixed": false, "field": "spool_type", "note": "See spool_type_reference table for full list"},
+        "modifier":   {"fixed": true,  "value": "M"},
+        "connector":  {"fixed": false, "field": "coil_connector",
+                       "options": {"U": "Standard DIN plug", "L": "Lead wires", "D": "Alt DIN variant"}},
+        "voltage":    {"fixed": false, "field": "coil_voltage",
+                       "options": {"G7": "12VDC", "H7": "24VDC", "J7": "48VDC",
+                                   "A7": "110VAC 50Hz", "B7": "115VAC 60Hz",
+                                   "D7": "220VAC 50Hz", "E7": "230VAC 50/60Hz", "F7": "240VAC 50Hz"}},
+        "design":     {"fixed": false, "field": "design_number",
+                       "options": {"60": "standard", "61": "variant-1", "62": "variant-2"},
+                       "default": "60",
+                       "note": "60, 61, 62 are interchangeable — all in current production"}
+      },
+      "default_connector": "U",
+      "default_design": "60"
+    },
+    "DG4V-5": {
+      "description": "4-way directional valve, CETOP 5 / NG10 / ISO 4401-05",
+      "valve_size": "NG10",
+      "mounting": "ISO 4401-05",
+      "max_pressure_bar": 315,
+      "code_template": "DG4V-{size}-{spool}-M-{connector}-{voltage}-{design}",
+      "segments": {
+        "series":     {"fixed": true,  "value": "DG4V"},
+        "size":       {"fixed": true,  "value": "5"},
+        "spool":      {"fixed": false, "field": "spool_type"},
+        "modifier":   {"fixed": true,  "value": "M"},
+        "connector":  {"fixed": false, "field": "coil_connector",
+                       "options": {"U": "Standard DIN plug", "L": "Lead wires"}},
+        "voltage":    {"fixed": false, "field": "coil_voltage",
+                       "options": {"G7": "12VDC", "H7": "24VDC", "J7": "48VDC",
+                                   "A7": "110VAC 50Hz", "E7": "230VAC 50/60Hz"}},
+        "design":     {"fixed": false, "default": "60"}
+      },
+      "default_connector": "U",
+      "default_design": "60"
+    }
+  },
+  "size_mapping": {
+    "NG6":   "DG4V-3",
+    "NG10":  "DG4V-5",
+    "CETOP3": "DG4V-3",
+    "CETOP5": "DG4V-5",
+    "6":     "DG4V-3",
+    "10":    "DG4V-5"
+  },
+  "notes": "Upload the Vickers by Danfoss DG4V-3 user guide PDF to confirm connector and voltage code lists. The codes above are based on standard Vickers/Danfoss DG4V conventions."
+}
