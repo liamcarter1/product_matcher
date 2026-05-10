@@ -121,11 +121,19 @@ The Danfoss-branded DG4V user guide has a DIFFERENT position-4 structure from th
 - Note: "Eaton" hydraulics no longer exists — Danfoss acquired Eaton's hydraulics in 2021 and
   now sells these products as "Vickers by Danfoss". Treat any "Eaton" DG4V references as Vickers by Danfoss.
 - LH build and spring-offset direction are EMBEDDED in the Danfoss spool type code itself.
-  "2A" already means spring-offset; "2AL" already means spring-offset + LH build.
-  Do NOT create a separate segment with options "A", "L", "AL", or "" adjacent to
-  the spool_type segment — these are part of the spool code, not extra positions.
-  The ordering code page may have a note explaining what A and L mean — that is
-  documentation of the spool codes, NOT an additional segment.
+  The authoritative Danfoss spring/build suffixes are:
+    A  = Spring offset, end-to-end (RH build)   e.g. 2A
+    AL = Spring offset, end-to-end, LH build     e.g. 2AL
+    B  = Spring offset, end-to-centre (RH build) e.g. 2B
+    BL = Spring offset, end-to-centre, LH build  e.g. 2BL
+    C  = Spring centred                          e.g. 2C
+    N  = No spring, detented                     e.g. 2N
+  The ordering code page only lists a SUBSET of spool codes — the system automatically
+  expands each base number to all six suffix combinations. Just extract whatever codes
+  you see in the guide (e.g. "2A", "2C", "22A") — the system handles the rest.
+- Do NOT create a separate segment with options "A", "L", "AL", "B", "BL", "C", "N",
+  or "" adjacent to the spool_type segment. Section 5 of the ordering code page explains
+  what the suffix letters mean — that is documentation, NOT an additional segment.
 - The segment immediately after spool_type in Danfoss DG4V is "-M-" (fixed).
 - Example: DG4V-3-2C-M-U-H7-60 = series/size/spool/M-fixed/connector/voltage/design.
 
@@ -164,7 +172,9 @@ CODE TEMPLATE PARENTHESES — FORBIDDEN: NEVER use parentheses in the code_templ
 Optional segments use a no-code option (code=""), not parentheses around the placeholder.
 
 DANFOSS DG4V: position after spool_type = fixed "M" (not C/A/D spring-return codes from Vickers guides).
-LH build is the "L" suffix on the spool code itself (e.g. "2AL"), not a separate segment.
+Spring/build suffixes (A, AL, B, BL, C, N) are embedded in the spool code itself (e.g. "2AL", "2C").
+The system auto-expands spool codes to all suffix combinations — just extract what the guide shows.
+Do NOT create a separate suffix segment adjacent to spool_type.
 
 {spool_reference_section}
 
