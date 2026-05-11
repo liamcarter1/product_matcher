@@ -255,8 +255,11 @@ class LookupTools:
             # If we constructed a code, try to find it directly in the DB
             constructed = translation.get("danfoss_code")
             if constructed:
+                # Use a high threshold so only genuine voltage-matched variants are
+                # returned; G7 and B-4 codes differ enough that 85% would still match
+                # wrong-voltage products (DG4V-3-2A-...-G7-60 vs ...-B-4-60 ≈ 87%).
                 direct_hits = self.db.fuzzy_lookup_model(
-                    constructed, company=my_company_name, threshold=85, limit=3
+                    constructed, company=my_company_name, threshold=92, limit=3
                 )
                 if direct_hits:
                     match_results = []

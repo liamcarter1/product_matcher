@@ -1345,24 +1345,61 @@ class ProductDB:
         """
         if not val:
             return val
+        import re as _re
         upper = val.strip().upper()
+        # 1. Direct lookup (exact match on the stored code)
         if upper in _COIL_VOLTAGE_NORMALIZE:
             return _COIL_VOLTAGE_NORMALIZE[upper]
-        # Already in normalized form if it contains VDC or VAC
-        import re as _re
+        # 2. Already in canonical form (e.g. "24VDC", "110VAC")
         if _re.match(r'^\d+V(?:DC|AC)$', upper):
             return upper
+        # 3. Strip separators and retry: "B-4" → "B4", "H 7" → "H7", "G - 24" → "G24"
+        stripped = _re.sub(r'[-\s]', '', upper)
+        if stripped != upper and stripped in _COIL_VOLTAGE_NORMALIZE:
+            return _COIL_VOLTAGE_NORMALIZE[stripped]
+        # 4. Family-letter fallback: "B-4" → family "B" + design digit "4" → "220VAC".
+        #    Applies when stored code is a Danfoss family letter plus a 1–2 digit
+        #    design/wiring variant that wasn't captured in the two-character map.
+        _FAMILY_FALLBACK = {
+            "G": "12VDC", "H": "24VDC", "J": "48VDC",
+            "A": "110VAC", "B": "220VAC", "E": "230VAC", "F": "240VAC",
+        }
+        m = _re.match(r'^([GHJABEF])(\d{1,2})?$', stripped)
+        if m:
+            letter, digits = m.group(1), m.group(2) or ""
+            two_char = letter + digits
+            if two_char in _COIL_VOLTAGE_NORMALIZE:
+                return _COIL_VOLTAGE_NORMALIZE[two_char]
+            if letter in _FAMILY_FALLBACK:
+                return _FAMILY_FALLBACK[letter]
         return val
 
     @staticmethod
     def _coil_is_dc(voltage_str: Optional[str]) -> Optional[bool]:
-        """Return True for DC supply, False for AC, None if type cannot be determined."""
+        """Return True for DC supply, False for AC, None if type cannot be determined.
+
+        Called on the NORMALIZED voltage string, so most inputs already contain
+        'VDC' or 'VAC'. The Rexroth/Parker prefix checks catch any raw codes that
+        slipped through normalization.
+        """
         if not voltage_str:
             return None
-        upper = voltage_str.upper()
+        upper = voltage_str.strip().upper()
         if "DC" in upper:
             return True
         if "AC" in upper:
+            return False
+        # Rexroth G-family (Gxx = DC), W-family (Wxx = AC)
+        import re as _re
+        if _re.match(r'^G\d', upper):
+            return True
+        if _re.match(r'^W\d', upper):
+            return False
+        # Danfoss/Vickers family letter still recognisable after failed normalisation
+        # G/H/J = DC; A/B/E/F = AC  (D excluded — ambiguous Parker DC vs Danfoss AC)
+        if upper and upper[0] in ('G', 'H', 'J'):
+            return True
+        if upper and upper[0] in ('A', 'B', 'E', 'F'):
             return False
         return None
 
