@@ -535,7 +535,7 @@ _VALID_SPEC_FIELDS = {
     "subcategory",
 }
 
-MAX_COMBINATIONS = 500
+MAX_COMBINATIONS = 2000
 
 # Section header patterns used for smart text selection
 _ORDERING_CODE_HEADERS = re.compile(
@@ -946,13 +946,38 @@ def generate_products_from_ordering_code(
                 definition.series, len(original_options),
             )
 
-    # Reorder variable segments: move spool to the END (rightmost position)
-    # so it cycles fastest in itertools.product — every spool type appears
-    # in the first batch before other segments start changing.
+    # Reorder variable segments so the most matching-critical specs cycle fastest
+    # (rightmost in itertools.product), guaranteeing they all appear within the cap.
+    #
+    # Iteration order, slowest → fastest:
+    #   design/connector/override  →  seal/material  →  series/size/ports  →  voltage  →  spool
+    #
+    # This ensures: with MAX_COMBINATIONS=2000 and a guide containing both 3WE and
+    # 4WE series (or multiple voltage families), every series×voltage×spool
+    # combination appears before connector/design variants exhaust the budget.
+
+    def _seg_cycle_priority(seg) -> int:
+        """Higher = faster-cycling (placed nearer to the end of the product())."""
+        combined = (seg.segment_name + " " +
+                    (seg.options[0].get("maps_to_field", "") if seg.options else "")).lower()
+        if "voltage" in combined or "coil_v" in combined:
+            return 3  # coil_voltage: DC vs AC must all appear
+        if any(k in combined for k in ("num_port", "valve_size", "size",
+                                        "series", "product_type", "valve_type")):
+            return 2  # series/size: determines product line (3WE vs 4WE, etc.)
+        if "seal" in combined or "material" in combined:
+            return 1  # seal/fluid material
+        return 0      # connector, design, override → slowest
+
     if spool_seg is not None and spool_idx is not None:
-        reordered = [s for i, s in enumerate(variable_segments) if i != spool_idx]
-        reordered.append(spool_seg)  # spool LAST = cycles fastest
-        variable_segments = reordered
+        non_spool = [s for i, s in enumerate(variable_segments) if i != spool_idx]
+        # Sort non-spool: lowest priority first (slowest-cycling = leftmost)
+        non_spool_sorted = sorted(non_spool, key=_seg_cycle_priority)
+        variable_segments = non_spool_sorted + [spool_seg]  # spool LAST = fastest
+    elif spool_seg is None:
+        # No spool segment — still sort by priority so voltage/series cycle fast
+        non_spool = list(variable_segments)
+        variable_segments = sorted(non_spool, key=_seg_cycle_priority)
 
     # Debug output
     print(f"[DEBUG] Product generation for {definition.series}:")
