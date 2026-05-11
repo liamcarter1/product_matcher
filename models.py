@@ -159,13 +159,13 @@ SCORE_WEIGHTS = {
     "flow_match": 0.10,
     "valve_size_match": 0.10,
     "actuator_type_match": 0.08,
-    "coil_voltage_match": 0.10,
+    "coil_voltage_match": 0.15,  # raised from 0.10 — safety-critical spec
     "spool_function_match": 0.08,
     "port_match": 0.06,
     "mounting_match": 0.08,
     "seal_material_match": 0.03,
     "temp_range_match": 0.02,
-    "semantic_similarity": 0.15,
+    "semantic_similarity": 0.10,  # lowered from 0.15 to fund coil_voltage increase
 }
 
 CONFIDENCE_THRESHOLD = 0.75

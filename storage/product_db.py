@@ -24,6 +24,31 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent.parent / "data" / "products.db"
 
+# Maps manufacturer-specific coil voltage codes to a canonical "NNNVxx" form.
+# Used by _normalize_coil_voltage() before spec comparison so that:
+#   - Correct matches score 1.0  (G12 == 12VDC, G7 == 12VDC)
+#   - AC/DC type can be reliably extracted for the hard gate
+_COIL_VOLTAGE_NORMALIZE: dict[str, str] = {
+    # Danfoss / Vickers DG4V single-letter family codes
+    "G": "12VDC", "H": "24VDC", "J": "48VDC",
+    "A": "110VAC", "B": "220VAC", "D": "220VAC", "E": "230VAC", "F": "240VAC",
+    # Danfoss / Vickers DG4V two-character codes (family + digit suffix)
+    "G5": "12VDC",  "G7": "12VDC",
+    "H5": "24VDC",  "H7": "24VDC",
+    "J5": "48VDC",  "J7": "48VDC",
+    "A5": "110VAC", "A7": "110VAC",
+    "B5": "115VAC", "B7": "115VAC",
+    "D5": "220VAC", "D7": "220VAC",
+    "E5": "230VAC", "E7": "230VAC",
+    "F5": "240VAC", "F7": "240VAC",
+    # Bosch Rexroth
+    "G12": "12VDC", "G24": "24VDC", "G48": "48VDC",
+    "W110": "110VAC", "W230": "230VAC",
+    # Parker
+    "D12": "12VDC", "D24": "24VDC",
+    "A110": "110VAC", "A230": "230VAC",
+}
+
 
 class ProductDB:
 
@@ -1166,12 +1191,23 @@ class ProductDB:
             competitor.valve_size, candidate.valve_size
         )
 
-        # Actuation & electrical
+        # Actuation & electrical — normalize voltage codes before comparison so that
+        # G12 (Rexroth 12VDC) == G7 (Danfoss 12VDC) scores 1.0, and G12 vs B7
+        # (Rexroth 12VDC vs Danfoss 115VAC) correctly scores 0.0 with AC/DC gate.
         breakdown.actuator_type_match = self._exact_match(
             competitor.actuator_type, candidate.actuator_type
         )
-        breakdown.coil_voltage_match = self._exact_match(
-            competitor.coil_voltage, candidate.coil_voltage
+        comp_volt_norm = self._normalize_coil_voltage(competitor.coil_voltage)
+        cand_volt_norm = self._normalize_coil_voltage(candidate.coil_voltage)
+        breakdown.coil_voltage_match = self._exact_match(comp_volt_norm, cand_volt_norm)
+
+        # Detect AC/DC type mismatch for the hard gate applied after scoring
+        comp_is_dc = self._coil_is_dc(comp_volt_norm)
+        cand_is_dc = self._coil_is_dc(cand_volt_norm)
+        ac_dc_mismatch = (
+            comp_is_dc is not None
+            and cand_is_dc is not None
+            and comp_is_dc != cand_is_dc
         )
         # Spool function match — prefer canonical pattern if available
         spool_score = self._exact_match(
@@ -1245,6 +1281,11 @@ class ProductDB:
         if breakdown.category_match == 0.0:
             confidence = min(confidence, 0.3)
 
+        # AC/DC coil mismatch: connecting DC coil to AC supply (or vice versa) destroys
+        # the coil. Cap at 0.4 so the match never clears the 0.75 threshold.
+        if ac_dc_mismatch:
+            confidence = min(confidence, 0.4)
+
         confidence = max(0.0, min(1.0, confidence))
 
         return confidence, breakdown
@@ -1292,6 +1333,38 @@ class ProductDB:
         if ratio >= 0.8:
             return ratio
         return 0.0
+
+    @staticmethod
+    def _normalize_coil_voltage(val: Optional[str]) -> Optional[str]:
+        """Map a manufacturer voltage code to a canonical 'NNNVxx' string.
+
+        Returns the normalized form (e.g. '12VDC', '110VAC') so that:
+        - Cross-manufacturer equivalents compare equal (G12 == 12VDC == G7)
+        - AC/DC type can be reliably extracted for the hard gate
+        Returns the original value unchanged if it cannot be mapped.
+        """
+        if not val:
+            return val
+        upper = val.strip().upper()
+        if upper in _COIL_VOLTAGE_NORMALIZE:
+            return _COIL_VOLTAGE_NORMALIZE[upper]
+        # Already in normalized form if it contains VDC or VAC
+        import re as _re
+        if _re.match(r'^\d+V(?:DC|AC)$', upper):
+            return upper
+        return val
+
+    @staticmethod
+    def _coil_is_dc(voltage_str: Optional[str]) -> Optional[bool]:
+        """Return True for DC supply, False for AC, None if type cannot be determined."""
+        if not voltage_str:
+            return None
+        upper = voltage_str.upper()
+        if "DC" in upper:
+            return True
+        if "AC" in upper:
+            return False
+        return None
 
     @staticmethod
     def _temp_range_match(

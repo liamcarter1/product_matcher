@@ -109,17 +109,26 @@ SCORE_WEIGHTS (total = 1.0):
   pressure_match:       0.10  (numerical closeness)
   flow_match:           0.10  (numerical closeness)
   valve_size_match:     0.10  (fuzzy string match)
-  coil_voltage_match:   0.10  (fuzzy string match - "24VDC" = "24 VDC")
+  coil_voltage_match:   0.15  (normalized then fuzzy — gate: AC/DC type mismatch caps total at 0.4)
   actuator_type_match:  0.08  (fuzzy string match)
   spool_function_match: 0.08  (CANONICAL-PATTERN equality if both sides have extra_specs["canonical_spool_pattern"]; otherwise falls back to fuzzy string match on raw spool_type code)
   mounting_match:       0.08  (fuzzy, falls back to mounting_pattern)
   port_match:           0.06  (fuzzy string match)
   seal_material_match:  0.03  (fuzzy string match)
   temp_range_match:     0.02  (range coverage)
-  semantic_similarity:  0.15  (from vector search + reranking)
+  semantic_similarity:  0.10  (from vector search + reranking)
 ```
 
 Missing specs score 0.5 (neutral), not 0.0.
+
+### Coil Voltage Normalization (`product_db.py`)
+Before comparison, raw manufacturer codes are mapped to canonical `NNNVxx` form via `_normalize_coil_voltage()`:
+- Danfoss/Vickers: `G7`→`12VDC`, `H7`→`24VDC`, `A7`→`110VAC`, `B7`→`115VAC`
+- Bosch Rexroth: `G12`→`12VDC`, `G24`→`24VDC`, `W110`→`110VAC`, `W230`→`230VAC`
+- Parker: `D12`→`12VDC`, `D24`→`24VDC`, `A110`→`110VAC`
+- Already-normalized strings (`24VDC`, `110VAC`) pass through unchanged.
+
+The AC/DC gate: if both sides' coil voltages are known and one is DC while the other is AC, confidence is capped at 0.4 (well below 0.75 threshold). Connecting DC coil to AC supply burns the coil — this is treated as a hard incompatibility, analogous to the category gate.
 
 ### String Matching (`product_db.py:_exact_match`)
 String comparisons use fuzzy tolerance, not strict equality:
