@@ -537,6 +537,74 @@ _VALID_SPEC_FIELDS = {
 
 MAX_COMBINATIONS = 2000
 
+# Known standard coil voltage options for each manufacturer family, keyed by
+# normalised manufacturer name substring.  When the LLM extraction misses voltage
+# options (e.g. the electrical table is in an image the text extractor can't read),
+# these are injected so that DC and AC variants are BOTH generated for every spool.
+#
+# Two formats exist for Danfoss/Vickers:
+#   single-letter  (B, G, H …)   — when the ordering code template uses 1-char codes
+#   two-character  (B7, G7, H7 …) — when the template includes the wiring-digit suffix
+# The code that matches the format already present in the extracted segment is used.
+_KNOWN_VOLTAGES: dict[str, dict] = {
+    # Danfoss DG4V / Vickers by Danfoss
+    "danfoss": {
+        "1char": [
+            {"code": "G",  "description": "12V DC",       "maps_to_field": "coil_voltage", "maps_to_value": "12VDC"},
+            {"code": "H",  "description": "24V DC",       "maps_to_field": "coil_voltage", "maps_to_value": "24VDC"},
+            {"code": "A",  "description": "110V AC 50Hz", "maps_to_field": "coil_voltage", "maps_to_value": "110VAC"},
+            {"code": "B",  "description": "220V AC",      "maps_to_field": "coil_voltage", "maps_to_value": "220VAC"},
+            {"code": "E",  "description": "230V AC",      "maps_to_field": "coil_voltage", "maps_to_value": "230VAC"},
+        ],
+        "2char": [
+            {"code": "G7",  "description": "12V DC",       "maps_to_field": "coil_voltage", "maps_to_value": "12VDC"},
+            {"code": "H7",  "description": "24V DC",       "maps_to_field": "coil_voltage", "maps_to_value": "24VDC"},
+            {"code": "A7",  "description": "110V AC 50Hz", "maps_to_field": "coil_voltage", "maps_to_value": "110VAC"},
+            {"code": "B7",  "description": "115V AC 60Hz", "maps_to_field": "coil_voltage", "maps_to_value": "115VAC"},
+            {"code": "D7",  "description": "220V AC 50Hz", "maps_to_field": "coil_voltage", "maps_to_value": "220VAC"},
+            {"code": "E7",  "description": "230V AC",      "maps_to_field": "coil_voltage", "maps_to_value": "230VAC"},
+        ],
+    },
+    "vickers": "danfoss",    # alias — same product line
+    # Bosch Rexroth 4WE / 4WRE
+    "rexroth": {
+        "rexroth": [
+            {"code": "G12",  "description": "12V DC",  "maps_to_field": "coil_voltage", "maps_to_value": "12VDC"},
+            {"code": "G24",  "description": "24V DC",  "maps_to_field": "coil_voltage", "maps_to_value": "24VDC"},
+            {"code": "G48",  "description": "48V DC",  "maps_to_field": "coil_voltage", "maps_to_value": "48VDC"},
+            {"code": "W110", "description": "110V AC", "maps_to_field": "coil_voltage", "maps_to_value": "110VAC"},
+            {"code": "W230", "description": "230V AC", "maps_to_field": "coil_voltage", "maps_to_value": "230VAC"},
+        ],
+    },
+}
+
+
+def _get_known_voltages(company: str, existing_codes: list[str]) -> list[dict] | None:
+    """Return the known voltage option list for a manufacturer, or None if unsupported.
+
+    Picks the right Danfoss code format (1-char vs 2-char) by looking at the
+    average length of the codes already extracted from the guide.
+    """
+    company_lower = company.lower()
+    entry = None
+    for key, val in _KNOWN_VOLTAGES.items():
+        if key in company_lower or company_lower.startswith(key[:4]):
+            entry = val
+            break
+    if entry is None:
+        return None
+    # Resolve alias
+    if isinstance(entry, str):
+        entry = _KNOWN_VOLTAGES[entry]
+    # Pick format for Danfoss based on existing code lengths
+    if "1char" in entry:
+        avg_len = (sum(len(c) for c in existing_codes) / len(existing_codes)
+                   if existing_codes else 1)
+        return entry["2char"] if avg_len >= 2 else entry["1char"]
+    # Rexroth — single format
+    return list(entry.values())[0]
+
+
 # Section header patterns used for smart text selection
 _ORDERING_CODE_HEADERS = re.compile(
     r'(?:ordering\s+code|how\s+to\s+order|model\s+(?:code|designation|number)\s+breakdown'
@@ -945,6 +1013,44 @@ def generate_products_from_ordering_code(
                 "keeping all %d options",
                 definition.series, len(original_options),
             )
+
+    # ── Voltage option injection ──────────────────────────────────────────────
+    # If the LLM only extracted 0-1 voltage options (common when the electrical
+    # table is in a PDF image), inject the full standard set for this manufacturer
+    # so that DC AND AC coil variants are always generated.
+    # "Fewer than 3 distinct AC/DC families" is the trigger, so a guide that
+    # correctly returned 5+ options is left untouched.
+    for seg in variable_segments:
+        combined = (seg.segment_name + " " +
+                    (seg.options[0].get("maps_to_field", "") if seg.options else "")).lower()
+        if "voltage" not in combined and "coil_v" not in combined:
+            continue
+        existing_codes = [o.get("code", "") for o in seg.options if o.get("code")]
+        # Count distinct AC/DC families by looking at normalized values
+        dc_present = any(
+            "DC" in o.get("maps_to_value", "").upper() for o in seg.options
+        )
+        ac_present = any(
+            "AC" in o.get("maps_to_value", "").upper() for o in seg.options
+        )
+        if dc_present and ac_present:
+            break  # Good — at least one DC and one AC voltage already present
+        # Injection needed — fetch known voltages for this manufacturer
+        known = _get_known_voltages(definition.company, existing_codes)
+        if not known:
+            break
+        existing_code_set = {c.upper() for c in existing_codes}
+        added = [opt for opt in known if opt["code"].upper() not in existing_code_set]
+        if added:
+            seg.options = seg.options + added
+            logger.info(
+                "Voltage injection for %s %s: added %d options %s (had: %s)",
+                definition.company, definition.series,
+                len(added), [o["code"] for o in added], existing_codes,
+            )
+            print(f"  [DEBUG] Voltage injection: added {[o['code'] for o in added]} "
+                  f"to {seg.segment_name} (was: {existing_codes})")
+        break
 
     # Reorder variable segments so the most matching-critical specs cycle fastest
     # (rightmost in itertools.product), guaranteeing they all appear within the cap.
