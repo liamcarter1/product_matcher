@@ -241,6 +241,17 @@ class LookupTools:
             translation = self.translate_competitor_code(
                 competitor.model_code, competitor.company
             )
+            # Write decoded coil voltage back onto the competitor object so the
+            # AC/DC gate in spec_comparison can fire even when the DB product has
+            # coil_voltage=None (e.g. the Rexroth product was indexed without it).
+            decoded_voltage = (translation.get("voltage_info") or {}).get("normalized")
+            if decoded_voltage:
+                competitor.coil_voltage = decoded_voltage
+                logger.info(
+                    "Enriched competitor coil_voltage from model code decode: %s",
+                    decoded_voltage,
+                )
+
             # If we constructed a code, try to find it directly in the DB
             constructed = translation.get("danfoss_code")
             if constructed:
@@ -250,6 +261,8 @@ class LookupTools:
                 if direct_hits:
                     match_results = []
                     for candidate, _score in direct_hits:
+                        # Enrich candidate spool so canonical pattern comparison fires
+                        candidate = self.enrich_competitor_spool(candidate)
                         confidence, breakdown = self.db.spec_comparison(
                             competitor, candidate, semantic_score=0.9
                         )
@@ -334,6 +347,7 @@ class LookupTools:
             # Score each DB candidate directly (no semantic score available)
             match_results = []
             for candidate in db_candidates[:50]:
+                candidate = self.enrich_competitor_spool(candidate)
                 confidence, breakdown = self.db.spec_comparison(
                     competitor, candidate, semantic_score=0.0
                 )
@@ -355,6 +369,12 @@ class LookupTools:
             candidate = self.db.get_product(product_id)
             if not candidate:
                 continue
+
+            # Enrich candidate spool so canonical pattern comparison fires.
+            # Without this, cand_pattern is always None and spec_comparison
+            # falls back to raw string match ("2A" vs "D" = 0.0), making all
+            # Danfoss spools score equally, so semantics picks the wrong one.
+            candidate = self.enrich_competitor_spool(candidate)
 
             confidence, breakdown = self.db.spec_comparison(
                 competitor, candidate, semantic_score
