@@ -39,6 +39,20 @@ Example: A Bosch Rexroth 4WRE ordering code "4WREE6...04-3XV/24A1" has:
 - Position 06: flow rate (variable) — options: "04" (4 l/min), "08" (8 l/min), "16" (16 l/min), "32" (32 l/min)
 - Position 09: seal material (variable) — options: "V" (FKM), "M" (NBR)
 
+CRITICAL — EXTRACT ALL OPTIONS FROM FOOTNOTES AND NOTES:
+The ordering code DIAGRAM shows only ONE representative value per position. The FULL list of
+available option codes is described in the accompanying footnotes, numbered notes, or option
+tables that appear below or beside the main diagram.
+
+You MUST read ALL footnotes and notes to find EVERY available option code for EVERY position.
+A common and costly mistake is to extract only the default code shown in the diagram and ignore
+the footnote that lists 3 more alternatives. Example: the diagram shows "4" for tank pressure
+rating — the footnote says "Options: 4, 6, 7, 8 bar". You MUST extract all four.
+
+RULE: is_fixed=true ONLY when the footnotes/notes confirm NO other codes exist for that position.
+If the guide lists alternatives anywhere in the document (even in a table, note, or appendix),
+the segment is VARIABLE (is_fixed=false) with ALL alternatives as options.
+
 CRITICAL — BLANK/OPTIONAL POSITIONS:
 Some panels in the model code breakdown diagram may appear BLANK or show no default code.
 These blank panels are NOT to be skipped. They represent optional or variable positions.
@@ -65,7 +79,7 @@ For EACH ordering code table, return:
 5. "segments": array of segment definitions, each with:
    - "position": the position number (integer, starting from 1)
    - "segment_name": descriptive name for this segment (e.g. "num_ports", "series", "flow_rate", "seal_material")
-   - "is_fixed": true if only one value, false if multiple options
+   - "is_fixed": true ONLY when no alternatives exist ANYWHERE in the document; false if footnotes/notes list additional option codes
    - "separator_before": character(s) immediately before this segment in the code ("", "-", "/", ".")
    - "options": array of value options, each with:
      - "code": the characters that appear in the model code (e.g. "04", "V", "WRE"). Use "" (empty string) for "no code" options.

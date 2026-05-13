@@ -1028,10 +1028,10 @@ def generate_products_from_ordering_code(
         existing_codes = [o.get("code", "") for o in seg.options if o.get("code")]
         # Count distinct AC/DC families by looking at normalized values
         dc_present = any(
-            "DC" in o.get("maps_to_value", "").upper() for o in seg.options
+            "DC" in str(o.get("maps_to_value") or "").upper() for o in seg.options
         )
         ac_present = any(
-            "AC" in o.get("maps_to_value", "").upper() for o in seg.options
+            "AC" in str(o.get("maps_to_value") or "").upper() for o in seg.options
         )
         if dc_present and ac_present:
             break  # Good — at least one DC and one AC voltage already present
