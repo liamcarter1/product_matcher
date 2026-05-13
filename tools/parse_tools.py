@@ -25,7 +25,7 @@ except ImportError:
 
 from models import (
     ExtractedProduct, HydraulicProduct, UploadMetadata,
-    OrderingCodeSegment, OrderingCodeDefinition,
+    OrderingCodeSegment, OrderingCodeDefinition, OrderingCodeConstraint,
 )
 from tools.llm_client import call_llm_json, TIER_MID, TIER_HIGH
 
@@ -1112,17 +1112,72 @@ def generate_products_from_ordering_code(
         print(f"[DEBUG] Total combinations: {total:,}")
 
     # Build option lists in the reordered segment order
-    if not variable_segments:
-        options_lists = [[]]
+    options_lists = [seg.options for seg in variable_segments] if variable_segments else [[]]
+    n_segs = len(options_lists)
+    defaults = tuple(0 for _ in range(n_segs))
+
+    # Two-pass stratified generation:
+    # Pass 1 (coverage): for every segment, for every option, emit one combo
+    # with that option and the first (default) option for all other segments.
+    # This guarantees every option value appears at least once regardless of
+    # how the segment's name relates to the priority keywords — eliminates the
+    # "only design=60" / "only pressure=4" class of gaps.
+    # Pass 2 (fill): continue with systematic itertools.product iteration
+    # (skipping already-seen keys) until MAX_COMBINATIONS is reached.
+    seen_keys: set = set()
+    ordered_keys: list = []
+
+    if variable_segments:
+        for seg_idx in range(n_segs):
+            for opt_idx in range(len(options_lists[seg_idx])):
+                key = list(defaults)
+                key[seg_idx] = opt_idx
+                key = tuple(key)
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    ordered_keys.append(key)
+        fill_budget = MAX_COMBINATIONS - len(ordered_keys)
+        if fill_budget > 0:
+            index_ranges = [range(len(opts)) for opts in options_lists]
+            for key in itertools.product(*index_ranges):
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    ordered_keys.append(key)
+                    if len(ordered_keys) >= MAX_COMBINATIONS:
+                        break
     else:
-        options_lists = [seg.options for seg in variable_segments]
+        ordered_keys = [()]
 
-    # Generate products via Cartesian product
+    # Segment name → index map for constraint enforcement
+    seg_name_to_idx = {seg.segment_name: i for i, seg in enumerate(variable_segments)}
+
+    # Generate products
     products = []
+    generated_codes: set = set()  # intra-table dedup (constraints can collapse combos)
     _logged_first = False
-    combos = itertools.product(*options_lists) if variable_segments else [()]
 
-    for combo in itertools.islice(combos, MAX_COMBINATIONS):
+    for raw_key in ordered_keys:
+        key = list(raw_key)  # mutable — constraints may override indices
+
+        # Apply inter-segment conditional rules extracted from the guide.
+        # Example: "For spool types beginning with 8, specify Design 61"
+        for c in definition.constraints:
+            when_idx = seg_name_to_idx.get(c.when_segment)
+            enforce_idx = seg_name_to_idx.get(c.enforce_segment)
+            if when_idx is None or enforce_idx is None:
+                continue
+            trigger_code = options_lists[when_idx][key[when_idx]].get("code", "")
+            if re.search(c.when_value_regex, trigger_code):
+                for opt_idx, opt in enumerate(options_lists[enforce_idx]):
+                    if opt.get("code", "") == c.enforce_value:
+                        key[enforce_idx] = opt_idx
+                        break
+
+        combo = (
+            tuple(options_lists[i][idx] for i, idx in enumerate(key))
+            if variable_segments else ()
+        )
+
         segment_values = {}
         specs = dict(definition.shared_specs)
 
@@ -1145,6 +1200,12 @@ def generate_products_from_ordering_code(
         model_code = seg_code if len(seg_code) >= len(tmpl_code) else tmpl_code
         if not model_code:
             continue
+        # Constraint enforcement can map multiple raw keys to the same model code
+        # (e.g. 8C+design60 and 8C+design61 both become 8C+design61).
+        # Skip duplicates here; ingest.py deduplication handles cross-table dups.
+        if model_code in generated_codes:
+            continue
+        generated_codes.add(model_code)
 
         if not _logged_first:
             logger.info("First generated product '%s' spec keys: %s",
@@ -2245,6 +2306,26 @@ def _parse_ordering_code_response(
                 segments=segments,
                 shared_specs=raw.get("shared_specs", {}),
             )
+            # Parse inter-segment conditional rules (e.g. spool 8* → design 61)
+            parsed_constraints = []
+            for c in raw.get("constraints", []):
+                try:
+                    parsed_constraints.append(OrderingCodeConstraint(
+                        when_segment=c["when_segment"],
+                        when_value_regex=c["when_value_regex"],
+                        enforce_segment=c["enforce_segment"],
+                        enforce_value=c["enforce_value"],
+                    ))
+                except Exception:
+                    pass
+            definition.constraints = parsed_constraints
+            if parsed_constraints:
+                logger.info(
+                    "Parsed %d constraints for %s %s: %s",
+                    len(parsed_constraints), company, definition.series,
+                    [(c.when_segment, c.when_value_regex, c.enforce_segment, c.enforce_value)
+                     for c in parsed_constraints],
+                )
             if definition.series and definition.segments:
                 definitions.append(definition)
             else:

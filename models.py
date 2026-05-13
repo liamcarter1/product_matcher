@@ -205,6 +205,20 @@ class OrderingCodeSegment(BaseModel):
     options: list[dict] = Field(default_factory=list)
 
 
+class OrderingCodeConstraint(BaseModel):
+    """A conditional rule between two segments in an ordering code table.
+
+    Example: 'For spool types beginning with 8, specify Design 61' becomes:
+    when_segment='spool_type', when_value_regex='^8',
+    enforce_segment='design', enforce_value='61'
+    """
+
+    when_segment: str
+    when_value_regex: str
+    enforce_segment: str
+    enforce_value: str
+
+
 class OrderingCodeDefinition(BaseModel):
     """Full ordering code breakdown extracted from a datasheet.
 
@@ -220,6 +234,7 @@ class OrderingCodeDefinition(BaseModel):
     code_template: str = ""
     segments: list[OrderingCodeSegment] = Field(default_factory=list)
     shared_specs: dict = Field(default_factory=dict)
+    constraints: list[OrderingCodeConstraint] = Field(default_factory=list)
 
 
 class ModelCodePattern(BaseModel):

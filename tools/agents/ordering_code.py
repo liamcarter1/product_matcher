@@ -74,6 +74,17 @@ For EACH ordering code table, return:
      - "maps_to_value": the value to store in that field (e.g. 4 for max_flow_lpm, "FKM" for seal_material, "24VDC" for coil_voltage). Use the appropriate type (number for numeric fields, string for text fields).
 6. "shared_specs": object with any specifications that apply to ALL variants from this table (e.g. {{"max_pressure_bar": 315}}).
    Extract these from the document text around the ordering code table.
+7. "constraints": array of inter-segment conditional rules. Read ALL footnotes, notes, and warning
+   boxes in and around the ordering code table and extract rules of the form
+   "if segment X has value matching pattern Y, segment Z must use value W".
+   Each constraint object:
+   - "when_segment": segment_name of the triggering segment (e.g. "spool_type")
+   - "when_value_regex": regex pattern for the triggering code (e.g. "^8" = starts with 8)
+   - "enforce_segment": segment_name whose value must be overridden (e.g. "design")
+   - "enforce_value": the exact option code to enforce (e.g. "61")
+   Danfoss DG4V example — note "For spool types beginning with 8, specify Design 61":
+   {{"when_segment": "spool_type", "when_value_regex": "^8", "enforce_segment": "design", "enforce_value": "61"}}
+   Leave as [] if no such rules are found.
 
 SPOOL TYPE / VALVE FUNCTION SEGMENT — CRITICAL:
 The spool type (also called valve function, spool code, or center condition) is one of the most important
@@ -167,6 +178,10 @@ Each option needs: code, description, maps_to_field (from: {valid_fields} or cus
 
 CRITICAL: Spool type segments map to maps_to_field: "spool_type". Include ALL spool options (typically 10-30+).
 EVERY segment MUST have segment_name and maps_to_field. NEVER skip positions.
+
+Also return "constraints": array of inter-segment conditional rules from footnotes/notes (e.g. "spool types
+beginning with 8 require Design 61" → {{"when_segment":"spool_type","when_value_regex":"^8","enforce_segment":"design","enforce_value":"61"}}).
+Leave as [] if none found.
 
 CODE TEMPLATE PARENTHESES — FORBIDDEN: NEVER use parentheses in the code_template string.
 Optional segments use a no-code option (code=""), not parentheses around the placeholder.
