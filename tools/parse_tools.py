@@ -631,7 +631,7 @@ def _select_ordering_code_text(full_text: str, max_chars: int = 40000) -> str:
         return full_text
 
     CONTEXT_BEFORE = 2000
-    CONTEXT_AFTER = 4000  # spool tables often follow the heading
+    CONTEXT_AFTER = 8000  # spool table (20+ entries) + all footnotes must fit
 
     ranges: list[tuple[int, int]] = []
 

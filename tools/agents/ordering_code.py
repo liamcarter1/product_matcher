@@ -235,6 +235,10 @@ def extract_ordering_code_text(
         )
 
     selected_text = _select_ordering_code_text(text)
+    print(f"[DEBUG] ordering_code selected_text: {len(selected_text):,} chars "
+          f"(full doc: {len(text):,} chars) | "
+          f"contains 'tank': {'tank' in selected_text.lower()} | "
+          f"contains '4, 6': {'4, 6' in selected_text}")
 
     # Build few-shot section from teaching examples
     few_shot_section = ""
