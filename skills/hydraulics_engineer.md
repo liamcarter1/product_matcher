@@ -157,7 +157,33 @@ Worked code breakdown for `DG4V-3-2C-M-U-H7-60`:
 | 4 | `M` | **true** | model_designator |
 | 5 | `U` | false | coil_connector (U, D, L, …) |
 | 6 | `H7` | false | coil_voltage (H7=24VDC, G7=12VDC, A7=110VAC, …) |
-| 7 | `60` | false | design_number (60, 61, 62 — interchangeable) |
+| 7 | `60` | false | design_number — **NOT freely interchangeable**: 60 = standard; **61 is mandatory for all spool variants beginning with 8** (8C, 8AL, 8BL, etc.); 62 = alternative where offered |
+| 8 | `4` | false | tank_back_pressure_bar — T-port back-pressure rating; options 4, 6, 7, 8 bar. **7 is the most common**, 4 is the least common. If the guide footnotes list these options, all four must be extracted; do not treat the diagram value as the only option. |
+
+### Ordering code diagrams show ONE representative value — footnotes have ALL options
+
+The ordering code template diagram (the segmented box illustration at the top of the page) shows exactly **one** code per segment — usually the most common or default option. This is NOT the complete list of options.
+
+**The complete list of options for each variable segment lives in the footnotes, numbered tables, or option tables that appear BELOW the main diagram.** A segment labelled "7" in the diagram may have options 4, 6, 7, 8 in the footnote table — all four must be extracted.
+
+Failure mode: reading only the diagram value and returning `is_fixed=true` or a single-option segment. This means the system can only generate one value for that dimension and will miss the most common product variants.
+
+**Rule**: A segment is `is_fixed=true` ONLY when the accompanying footnotes and option tables confirm no alternatives exist anywhere in the document. If alternatives are listed anywhere — even in a small note — the segment is variable with ALL alternatives as options.
+
+### Inter-segment conditional rules
+
+Some ordering code guides contain conditional rules that **constrain which option combinations are valid**. These appear as footnotes, notes, or warning boxes such as:
+
+> "For spool types beginning with 8, specify Design 61."
+> "Soft-shift option (FS) not available with spring-offset spools."
+
+These rules must be extracted as **constraints** in the JSON response, not ignored. Each constraint specifies:
+- `when_segment`: which segment triggers the rule (e.g. `spool_type`)
+- `when_value_regex`: the regex that matches the triggering code (e.g. `^8` for spool starting with 8)
+- `enforce_segment`: which other segment must take a specific value (e.g. `design`)
+- `enforce_value`: the required option code (e.g. `61`)
+
+Without extracting these constraints, the combinatorial generator produces invalid model codes (e.g. `DG4V-3-8C-M-U-H7-60`) that do not exist in practice.
 
 ### Manufacturer layout differences
 
@@ -571,48 +597,57 @@ the segment's role from the ordering-code template to disambiguate.
 1. **DO NOT** treat each row in an ordering code sub-table as a separate complete
    product. Each row is one option for one segment. Products are combinations
    across segments.
-2. **DO NOT** assume segment positions are the same across manufacturers. Always
+2. **DO NOT** treat the value shown in the ordering code diagram as the only option
+   for a segment. The diagram shows ONE representative value. ALL valid option codes
+   are listed in the footnotes/option tables below the diagram. Always read the
+   footnotes to find every option, even if the diagram only shows "4" or "60" as
+   a default — the footnote will list all available codes for that position.
+3. **DO NOT** assume design 60 and 61 are freely interchangeable for all Danfoss
+   DG4V variants. Spool types beginning with 8 (8C, 8AL, 8BL, 8N, etc.) REQUIRE
+   design 61. Using design 60 with an 8-series spool produces a model code that does
+   not exist and cannot be ordered. Extract this as an inter-segment constraint.
+4. **DO NOT** assume segment positions are the same across manufacturers. Always
    read the ordering code template to learn the segment order for THIS guide.
-3. **DO NOT** match spool types by code letter alone. Rexroth `E` and Danfoss
+5. **DO NOT** match spool types by code letter alone. Rexroth `E` and Danfoss
    `2C` are the same spool (closed centre) but different codes. Always match by
    canonical pattern.
-4. **DO NOT** confuse Rexroth `H` with Danfoss `H` — they are the most common
+6. **DO NOT** confuse Rexroth `H` with Danfoss `H` — they are the most common
    false-friend in this domain. Rexroth H = OPEN family → maps to Danfoss `0C`.
-5. **DO NOT** ignore "no code" / blank / standard entries. These are valid
+7. **DO NOT** ignore "no code" / blank / standard entries. These are valid
    default options and must be included in the product combinations.
-6. **DO NOT** invent specifications not present in the guide. If a value is not
+8. **DO NOT** invent specifications not present in the guide. If a value is not
    stated, leave the field null — do not guess.
-7. **DO NOT** confuse operating-pressure limits with test pressure. Use the
+9. **DO NOT** confuse operating-pressure limits with test pressure. Use the
    "maximum operating pressure" value, not burst/proof/test pressure.
-8. **DO NOT** mix DC and AC electrical options. They have different connector
-   types, voltages, and switching characteristics. Keep them as separate
-   product variants.
-9. **DO NOT** skip the spool-diagram page. The spool type cannot be reliably
-   extracted from text alone — the ISO symbol diagrams are the authoritative
-   source for flow-path behaviour.
-10. **DO NOT** treat a 3-box symbol as automatically 4/3 double-solenoid.
+10. **DO NOT** mix DC and AC electrical options. They have different connector
+    types, voltages, and switching characteristics. Keep them as separate
+    product variants.
+11. **DO NOT** skip the spool-diagram page. The spool type cannot be reliably
+    extracted from text alone — the ISO symbol diagrams are the authoritative
+    source for flow-path behaviour.
+12. **DO NOT** treat a 3-box symbol as automatically 4/3 double-solenoid.
     Check whether one or both solenoid sides have a coil drawn — if only one,
     the valve is single-solenoid (Bosch Rexroth A, C, D are 4/2 with 3-box
     diagrams).
 
 ### What NOT to do during matching
 
-11. **DO NOT** auto-substitute soft-shift (`73` / `FS`) variants with standard
+13. **DO NOT** auto-substitute soft-shift (`73` / `FS`) variants with standard
     valves. The shift dynamics are different and pressure spikes can damage
     the system.
-12. **DO NOT** ignore `topology` when matching. A 4/2 single-solenoid spool
+14. **DO NOT** ignore `topology` when matching. A 4/2 single-solenoid spool
     is not interchangeable with a 4/3 double-solenoid even when their canonical
     patterns happen to be equal.
-13. **DO NOT** ignore `hand_build`. LH and RH builds are mirrors and require
+15. **DO NOT** ignore `hand_build`. LH and RH builds are mirrors and require
     the manifold port orientation to match. A `2AL` is not a drop-in for a `2A`.
-14. **DO NOT** recommend cross-manufacturer coil substitution. Coils have
+16. **DO NOT** recommend cross-manufacturer coil substitution. Coils have
     different dimensions and connector pin layouts even when valve bodies are
     interchangeable per ISO 4401.
-15. **DO NOT** report a high-confidence match when the canonical pattern is
+17. **DO NOT** report a high-confidence match when the canonical pattern is
     unique to one manufacturer (e.g. Rexroth F/L/P/T/V have unique patterns
     that intentionally don't map to any Danfoss spool — these should drop
     confidence below the 0.75 threshold).
-16. **DO NOT** extract data from cross-reference / competitor-equivalence
+18. **DO NOT** extract data from cross-reference / competitor-equivalence
     tables as if they were the manufacturer's own ordering codes. These tables
     advertise compatibility with other brands and are NOT the canonical product
     definition.
