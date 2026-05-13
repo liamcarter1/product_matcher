@@ -565,7 +565,7 @@ _KNOWN_VOLTAGES: dict[str, dict] = {
             {"code": "E7",  "description": "230V AC",      "maps_to_field": "coil_voltage", "maps_to_value": "230VAC"},
         ],
     },
-    "vickers": "danfoss",    # alias — same product line
+    "vickers": "danfoss",   # alias — same product line
     # Bosch Rexroth 4WE / 4WRE
     "rexroth": {
         "rexroth": [
@@ -603,6 +603,37 @@ def _get_known_voltages(company: str, existing_codes: list[str]) -> list[dict] |
         return entry["2char"] if avg_len >= 2 else entry["1char"]
     # Rexroth — single format
     return list(entry.values())[0]
+
+
+# Known T-port back-pressure rating options for Danfoss/Vickers DG4V.
+# The DG4V ordering code position 8 (tank back-pressure suffix) is embedded in
+# vector-graphics diagrams that PyMuPDF cannot read as text.  The LLM therefore
+# only ever sees the diagram's representative value "4" and returns either
+# is_fixed=True or a single-option variable segment.  Injecting the full set
+# (same pattern as _KNOWN_VOLTAGES for coil voltage) is the only reliable fix.
+_DANFOSS_TANK_PRESSURE_OPTIONS: list[dict] = [
+    {"code": "4", "description": "4 bar T-port back-pressure",
+     "maps_to_field": "tank_back_pressure_bar", "maps_to_value": 4},
+    {"code": "6", "description": "6 bar T-port back-pressure",
+     "maps_to_field": "tank_back_pressure_bar", "maps_to_value": 6},
+    {"code": "7", "description": "7 bar T-port back-pressure (most common)",
+     "maps_to_field": "tank_back_pressure_bar", "maps_to_value": 7},
+    {"code": "8", "description": "8 bar T-port back-pressure",
+     "maps_to_field": "tank_back_pressure_bar", "maps_to_value": 8},
+]
+
+
+def _is_danfoss_company(company: str) -> bool:
+    cl = company.lower()
+    return "danfoss" in cl or "vickers" in cl
+
+
+def _is_tank_pressure_segment(seg) -> bool:
+    name = seg.segment_name.lower()
+    field = (seg.options[0].get("maps_to_field", "") if seg.options else "").lower()
+    return ("tank" in name or "tank" in field or
+            "back_pressure" in name or "back_pressure" in field or
+            "t_port" in name or "t_port" in field)
 
 
 # Section header patterns used for smart text selection
@@ -1051,6 +1082,45 @@ def generate_products_from_ordering_code(
             print(f"  [DEBUG] Voltage injection: added {[o['code'] for o in added]} "
                   f"to {seg.segment_name} (was: {existing_codes})")
         break
+
+    # ── Tank back-pressure option injection (Danfoss / Vickers DG4V) ─────────────
+    # The DG4V ordering code's T-port pressure rating (options 4/6/7/8 bar) lives in
+    # a vector-graphics diagram on page 4 of the guide.  PyMuPDF extracts no text
+    # from that diagram, so the LLM sees only the representative value "4" and returns
+    # either is_fixed=True (segment goes into fixed_segments, not variable_segments)
+    # or a single-option variable segment.  In either case only "4" is generated.
+    # Injecting the known full set (same pattern as voltage injection above) is the
+    # only reliable fix for image-embedded content that cannot be read as text.
+    if _is_danfoss_company(definition.company):
+        tank_seg = None
+        tank_in_fixed = False
+        for seg in variable_segments:
+            if _is_tank_pressure_segment(seg):
+                tank_seg = seg
+                break
+        if tank_seg is None:
+            for seg in fixed_segments:
+                if _is_tank_pressure_segment(seg):
+                    tank_seg = seg
+                    tank_in_fixed = True
+                    break
+        if tank_seg is not None and len(tank_seg.options) < 4:
+            existing_codes = {o.get("code", "") for o in tank_seg.options}
+            to_add = [o for o in _DANFOSS_TANK_PRESSURE_OPTIONS
+                      if o["code"] not in existing_codes]
+            tank_seg.options = tank_seg.options + to_add
+            print(f"  [DEBUG] Tank pressure injection for {definition.series}: "
+                  f"added codes {[o['code'] for o in to_add]} "
+                  f"(had: {sorted(existing_codes)})")
+            if tank_in_fixed:
+                # Promote from fixed to variable so it cycles through all values
+                tank_seg.is_fixed = False
+                fixed_segments.remove(tank_seg)
+                variable_segments.append(tank_seg)
+                print(f"  [DEBUG] Promoted tank_pressure segment from fixed to variable")
+        elif tank_seg is None:
+            print(f"  [DEBUG] No tank pressure segment found in {definition.series} — "
+                  f"check if the ordering code table includes this position")
 
     # Reorder variable segments so the most matching-critical specs cycle fastest
     # (rightmost in itertools.product), guaranteeing they all appear within the cap.

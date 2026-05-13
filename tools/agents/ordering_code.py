@@ -162,6 +162,19 @@ The Danfoss-branded DG4V user guide has a DIFFERENT position-4 structure from th
 - The segment immediately after spool_type in Danfoss DG4V is "-M-" (fixed).
 - Example: DG4V-3-2C-M-U-H7-60 = series/size/spool/M-fixed/connector/voltage/design.
 
+DANFOSS DG4V INTER-SEGMENT CONSTRAINTS — EXTRACT THESE AS "constraints" in the JSON:
+The Danfoss DG4V user guide (page 4 of the combination table) documents rules that apply
+to spool types beginning with "8" (8C, 8A, 8AL, 8B, 8BL, 8N):
+1. Design number MUST be 61 (not 60): when_segment="spool_type", when_value_regex="^8",
+   enforce_segment="design", enforce_value="61"
+2. A "V" code appears at section 7 of the combination table (BEFORE the M modifications
+   identifier at section 8) for all 8-series spools. Extract this as:
+   when_segment="spool_type", when_value_regex="^8",
+   enforce_segment="<segment_name_for_section_7>", enforce_value="V"
+   where <segment_name_for_section_7> is whatever segment_name you assign to that position.
+These constraints MUST be returned in the "constraints" array — they are explicitly stated
+in the guide and cannot be discovered from the segment options alone.
+
 BOSCH REXROTH SOLENOID POSITION LETTER:
 In Rexroth 4WE6 ordering codes, the solenoid-side indicator ("A" for solenoid-a side,
 "B" for solenoid-b side) is a SEPARATE segment from the spool letter. These appear after

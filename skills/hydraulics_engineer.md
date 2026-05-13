@@ -149,16 +149,23 @@ no additional segment is needed.
 
 Worked code breakdown for `DG4V-3-2C-M-U-H7-60`:
 
-| Pos | Code | is_fixed | Segment name |
-|---|---|---|---|
-| 1 | `DG4V` | true | series |
-| 2 | `3` | true | valve_size |
-| 3 | `2C` | false | spool_type (many options: 2A, 2AL, 2C, 0A, 8C, 6C, …) |
-| 4 | `M` | **true** | model_designator |
-| 5 | `U` | false | coil_connector (U, D, L, …) |
-| 6 | `H7` | false | coil_voltage (H7=24VDC, G7=12VDC, A7=110VAC, …) |
-| 7 | `60` | false | design_number — **NOT freely interchangeable**: 60 = standard; **61 is mandatory for all spool variants beginning with 8** (8C, 8AL, 8BL, etc.); 62 = alternative where offered |
-| 8 | `4` | false | tank_back_pressure_bar — T-port back-pressure rating; options 4, 6, 7, 8 bar. **7 is the most common**, 4 is the least common. If the guide footnotes list these options, all four must be extracted; do not treat the diagram value as the only option. |
+| Pos | Code | is_fixed | Segment name | Notes |
+|---|---|---|---|---|
+| 1 | `DG4V` | true | series | |
+| 2 | `3` | true | valve_size | |
+| 3 | `2C` | false | spool_type | Many options: 2A, 2AL, 2C, 0A, 8C, 6C, … |
+| 4 | `M` | **true** | model_designator | Danfoss guide only; Vickers guide has C/A/D here |
+| 5 | `U` | false | coil_connector | U, D, L, … |
+| 6 | `H7` | false | coil_voltage | H7=24VDC, G7=12VDC, A7=110VAC, … |
+| 7 | `(V)` | false | spool_8_modifier | **For 8-series spools only**: code = "V" (mandatory, stated on page 4 of the guide). For all other spools: code = "" (no code, omitted from model code). This is section 7 of the combination table. Extract as variable with options `""` and `"V"`, with constraint: spool 8* → V. |
+| 8 | `60` | false | design_number | **NOT freely interchangeable**: 60 = standard; **61 mandatory for spool 8*** (8C, 8AL, etc.); 62 where available. This is section 8 of the combination table. |
+| 9 | `4` | false | tank_back_pressure_bar | T-port back-pressure; options **4, 6, 7, 8 bar**. 7 is most common, 4 is least. Content is in a graphics diagram — inject all four options if only one extracted. |
+
+**Inter-segment constraints for 8-series spools (BOTH must be returned in "constraints"):**
+- Spool 8* → section 7 (spool_8_modifier) = `"V"` — stated on page 4 of the Danfoss guide
+- Spool 8* → section 8 (design_number) = `"61"` — stated on page 4 of the Danfoss guide
+
+Without both constraints, the generator produces invalid codes like `DG4V-3-8C-M-U-H7-60` (missing V, wrong design).
 
 ### Ordering code diagrams show ONE representative value — footnotes have ALL options
 
@@ -602,10 +609,12 @@ the segment's role from the ordering-code template to disambiguate.
    are listed in the footnotes/option tables below the diagram. Always read the
    footnotes to find every option, even if the diagram only shows "4" or "60" as
    a default — the footnote will list all available codes for that position.
-3. **DO NOT** assume design 60 and 61 are freely interchangeable for all Danfoss
-   DG4V variants. Spool types beginning with 8 (8C, 8AL, 8BL, 8N, etc.) REQUIRE
-   design 61. Using design 60 with an 8-series spool produces a model code that does
-   not exist and cannot be ordered. Extract this as an inter-segment constraint.
+3. **DO NOT** treat spool 8-series codes as having the same ordering code structure
+   as other spools. Per page 4 of the Danfoss DG4V guide, 8-series spools (8C, 8AL,
+   8BL, 8N, etc.) require TWO mandatory changes: (a) section 7 of the combination
+   table must be `"V"` (for all other spools this position is blank / no code), and
+   (b) design number (section 8) must be `"61"` not `"60"`. Both are constraints
+   that must be extracted from the guide and returned in the "constraints" array.
 4. **DO NOT** assume segment positions are the same across manufacturers. Always
    read the ordering code template to learn the segment order for THIS guide.
 5. **DO NOT** match spool types by code letter alone. Rexroth `E` and Danfoss
