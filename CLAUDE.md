@@ -462,12 +462,35 @@ Upload their catalogue/user guide PDF via the admin console. The pipeline:
 
 ### Ordering Code Combinatorial Generation (`parse_tools.py`)
 When a PDF contains "Ordering code" / "How to Order" tables:
-- `ordering_code.py` agent identifies segment positions, fixed/variable flags, separators, and field mappings
-- `generate_products_from_ordering_code()` creates all permutations via `itertools.product()`
+- `ordering_code.py` agent identifies segment positions, fixed/variable flags, separators, field mappings, and **inter-segment constraints**
+- `generate_products_from_ordering_code()` uses a **two-pass stratified approach**:
+  - Pass 1 (coverage): for every variable segment × option, emit one combo with that option and defaults elsewhere — guarantees every option value appears at least once regardless of segment name
+  - Pass 2 (fill): continue with `itertools.product` iteration, skipping already-seen keys, until `MAX_COMBINATIONS` is reached
+- Constraints from the guide (e.g. "spool 8* requires design 61") are applied before code assembly, overriding the relevant segment index
 - `assemble_model_code()` reconstructs model codes from a template like `{01}{02}{03}-{04}/{05}`
 - Empty "no code" options handled (double separators cleaned up)
-- `MAX_COMBINATIONS = 500` safety cap
-- Data models: `OrderingCodeSegment`, `OrderingCodeDefinition` in `models.py`
+- `MAX_COMBINATIONS = 2000` safety cap
+- Intra-table dedup via `generated_codes` set prevents duplicate model codes when constraints collapse multiple keys to the same output
+- Data models: `OrderingCodeSegment`, `OrderingCodeDefinition`, `OrderingCodeConstraint` in `models.py`
+
+### Inter-Segment Constraints (`models.py`, `parse_tools.py`, `tools/agents/ordering_code.py`)
+The ordering code agent extracts conditional rules from guide footnotes (e.g. "For spool types beginning with 8, specify Design 61"):
+```python
+OrderingCodeConstraint(
+    when_segment="spool_type",   # segment_name of the triggering segment
+    when_value_regex="^8",       # regex matched against the option code
+    enforce_segment="design",    # segment_name to override
+    enforce_value="61",          # the required code
+)
+```
+`OrderingCodeDefinition.constraints` holds the list. The generator enforces each constraint at combo-build time using two-layer lookup (segment_name first, then maps_to_field fallback). Validation prints `[DEBUG] Constraint resolved ✓` or `[WARN]` with available names when a constraint can't be matched.
+
+### Ordering Code Context Window (`parse_tools.py`)
+`_select_ordering_code_text()` selects text around "How to Order" / spool-section headers:
+- `CONTEXT_BEFORE = 2000` chars
+- `CONTEXT_AFTER = 8000` chars (doubled from 4000 — spool tables ~3000 chars leave room for footnotes)
+
+The ordering code diagram shows ONE representative value per segment. ALL valid option codes are in the footnotes below the diagram. The 8000-char window must cover: diagram + spool table + connector/voltage/design/tank-pressure footnotes. A debug print at extraction time shows `len(selected_text)` and whether "tank" appears in it.
 
 ### Field Alias Rescue (`ingest.py`)
 `_FIELD_ALIASES` maps ~60 common LLM/table output names to canonical HydraulicProduct fields (e.g. "pressure" -> "max_pressure_bar", "voltage" -> "coil_voltage"). Applied before product construction to catch non-standard field names.
