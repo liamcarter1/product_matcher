@@ -1148,8 +1148,49 @@ def generate_products_from_ordering_code(
     else:
         ordered_keys = [()]
 
-    # Segment name → index map for constraint enforcement
+    # Segment name → index map for constraint enforcement.
+    # Build two maps: by segment_name and by maps_to_field (first option's field).
+    # Constraints from the LLM may use either naming convention, so both are checked.
     seg_name_to_idx = {seg.segment_name: i for i, seg in enumerate(variable_segments)}
+    seg_field_to_idx = {}
+    for i, seg in enumerate(variable_segments):
+        if seg.options:
+            field = seg.options[0].get("maps_to_field", "")
+            if field:
+                seg_field_to_idx[field] = i
+
+    def _resolve_seg_idx(name: str) -> int | None:
+        """Look up variable segment index by segment_name first, maps_to_field second."""
+        idx = seg_name_to_idx.get(name)
+        if idx is None:
+            idx = seg_field_to_idx.get(name)
+        return idx
+
+    # Validate constraints once before the generation loop and warn on mismatches
+    if definition.constraints:
+        available = list(seg_name_to_idx.keys()) + list(seg_field_to_idx.keys())
+        for c in definition.constraints:
+            wi = _resolve_seg_idx(c.when_segment)
+            ei = _resolve_seg_idx(c.enforce_segment)
+            if wi is None or ei is None:
+                print(
+                    f"  [WARN] Constraint '{c.when_segment} {c.when_value_regex} "
+                    f"-> {c.enforce_segment}={c.enforce_value}' could not be resolved. "
+                    f"Available segment names/fields: {available}"
+                )
+            else:
+                # Check that enforce_value exists in the enforce segment's options
+                codes = [o.get("code", "") for o in options_lists[ei]]
+                if c.enforce_value not in codes:
+                    print(
+                        f"  [WARN] Constraint enforce_value '{c.enforce_value}' not found "
+                        f"in segment '{c.enforce_segment}' options: {codes}"
+                    )
+                else:
+                    print(
+                        f"  [DEBUG] Constraint resolved: {c.when_segment} matches "
+                        f"r'{c.when_value_regex}' → {c.enforce_segment}={c.enforce_value} ✓"
+                    )
 
     # Generate products
     products = []
@@ -1162,8 +1203,8 @@ def generate_products_from_ordering_code(
         # Apply inter-segment conditional rules extracted from the guide.
         # Example: "For spool types beginning with 8, specify Design 61"
         for c in definition.constraints:
-            when_idx = seg_name_to_idx.get(c.when_segment)
-            enforce_idx = seg_name_to_idx.get(c.enforce_segment)
+            when_idx = _resolve_seg_idx(c.when_segment)
+            enforce_idx = _resolve_seg_idx(c.enforce_segment)
             if when_idx is None or enforce_idx is None:
                 continue
             trigger_code = options_lists[when_idx][key[when_idx]].get("code", "")
@@ -2326,6 +2367,10 @@ def _parse_ordering_code_response(
                     [(c.when_segment, c.when_value_regex, c.enforce_segment, c.enforce_value)
                      for c in parsed_constraints],
                 )
+                print(f"  [DEBUG] Constraints extracted for {definition.series}: "
+                      f"{[(c.when_segment, c.when_value_regex, c.enforce_segment, c.enforce_value) for c in parsed_constraints]}")
+            else:
+                print(f"  [DEBUG] No constraints extracted for {definition.series}")
             if definition.series and definition.segments:
                 definitions.append(definition)
             else:
