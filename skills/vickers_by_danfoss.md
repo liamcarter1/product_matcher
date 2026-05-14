@@ -480,10 +480,11 @@ every substantive page.**  Do NOT assume any content is in the text layer.  Any
 The four codes at section 14 (`4`, `6`, `7`, `8`) are **specification codes, not
 bar values**.  Code `7` means DC high performance at 207 bar (3000 psi), not 7 bar.
 Specifically:
-- `4` = 70 bar (1000 psi), X5 only
-- `6` = 207 bar (3000 psi), AC high performance
-- `7` = 207 bar (3000 psi), DC high performance ← **most common**
-- `8` = 160 bar (2300 psi), AC high performance lower rating, X5 only
+- `4` = 70 bar (1000 psi), **X5 coil type only** ▲
+- `6` = 207 bar (3000 psi), AC high performance (incl. S7 switch)
+- `7` = 207 bar (3000 psi), DC high performance (incl. S7 switch) ← **most common**
+- `8` = 160 bar (2300 psi), AC high performance lower tank port rating (no X5 restriction)
+- ▲ The X5-only restriction applies solely to code 4
 
 If vision only extracts `4` from the diagram (which shows one representative value),
 the injection constant `_DANFOSS_TANK_PRESSURE_OPTIONS` will add codes 6, 7, 8.
