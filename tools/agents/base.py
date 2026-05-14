@@ -64,15 +64,35 @@ def _load_skill() -> dict[str, str]:
     return _load_skill_file("hydraulics_engineer.md")
 
 
+_MANUFACTURER_ALIASES: dict[str, str] = {
+    # Vickers / Eaton / Danfoss variant names all resolve to the same skill file
+    "vickers": "vickers_by_danfoss.md",
+    "eaton": "vickers_by_danfoss.md",
+    "eaton vickers": "vickers_by_danfoss.md",
+    "eaton/vickers": "vickers_by_danfoss.md",
+    "danfoss vickers": "vickers_by_danfoss.md",
+    # Rexroth short name
+    "rexroth": "bosch_rexroth.md",
+}
+
+
 def _manufacturer_to_filename(manufacturer: str) -> str:
     """Convert a manufacturer name to its skill filename.
 
+    Checks _MANUFACTURER_ALIASES first (for short/legacy names), then falls
+    back to auto-slug.
+
     Examples:
         "Bosch Rexroth"      → "bosch_rexroth.md"
-        "Parker"             → "parker.md"
         "Vickers by Danfoss" → "vickers_by_danfoss.md"
+        "Vickers"            → "vickers_by_danfoss.md"  (via alias)
+        "Rexroth"            → "bosch_rexroth.md"       (via alias)
+        "Parker"             → "parker.md"
     """
-    slug = re.sub(r'[^a-z0-9]+', '_', manufacturer.lower()).strip('_')
+    normalized = manufacturer.lower().strip()
+    if normalized in _MANUFACTURER_ALIASES:
+        return _MANUFACTURER_ALIASES[normalized]
+    slug = re.sub(r'[^a-z0-9]+', '_', normalized).strip('_')
     return f"{slug}.md"
 
 
