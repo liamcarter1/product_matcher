@@ -318,24 +318,65 @@ reliability-critical applications.
 
 ## 6. Operating Specifications
 
-From the Operating Data table on page 5 of BC442280316180en-000201:
+From the Operating Data table on page 5 of BC442280316180en-000201.
+The guide presents data in three columns corresponding to the three performance
+variants (ordering code section 3):
 
-| Specification | Value |
-|---|---|
-| Max pressure — P, A, B ports | **315 bar** (4571 psi) |
-| Max pressure — T port (standard) | **70 bar** (1000 psi) |
-| T-port back-pressure rating options | **4, 6, 7, 8 bar** (ordered separately) |
-| Max flow — DC models | Up to **80 l/min** (21 USgpm) at rated conditions |
-| Max flow — AC 50Hz | Approx. 40 l/min |
-| Operating temperature | −20°C to +80°C (−4°F to +176°F); special option to +100°C |
-| Fluid type | Mineral oil (ISO 11158 or equivalent); synthetic OK if NBR-compatible |
-| Viscosity range | 7–450 cSt (46–2090 SUS) operating; 15–36 cSt optimal |
-| Seals (standard) | Viton (FKM/FPM) — order code `blank` |
-| Seals (optional) | PTFE (Teflon) — order code `FPA`; PTFE + nitrile wiper — `FPA**W` |
-| Response time | 100 ms without frequent switching; 70 ms with S7 switch |
-| Coil insulation class | Class H (180°C) |
-| MTTF | 150 years (per ISO 13849) |
-| Mounting standard | ISO 4401-03 / NFPA D-03 / ANSI B93.7M-D03 |
+| Feature | DG4V-3 (blank/H) | DG4V-3S (X5 only) | DG4V-3R (8W coil) |
+|---|---|---|---|
+| **Pressure limits — P, A and B ports** | **350 bar (5075 psi)** | **350 bar (5075 psi)** ■ | **350 bar (5075 psi)** |
+| **T port pressure** | **210 bar (3045 psi)** | **70 bar (1000 psi)** | **210 bar (3045 psi)** |
+| Flow rating | See performance data | See performance data | See performance data |
+| Relative duty factor | Continuous; ED = 100% | Continuous; ED = 100% | Continuous; ED = 100% |
+| IP protection (ISO-4400 coil, plug fitted) | IEC 144 class **IP65** | IEC 144 class **IP66** | IEC 144 class **IP65** |
+| Coil winding class | Class H | Class H | Class H |
+| Lead wires (coils type F\*\*\*) | Class H | Class H | Class H |
+| Coil encapsulation | Class F | Class F | Class F |
+| Minimum voltage | 90% rated | 90% rated | 90% rated |
+
+**MTTF'd information according to ISO 13849: 150 years**
+
+■ For applications where valves are to remain pressurized (energized or de-energized)
+at pressures over 210 bar (3045 psi) without frequent switching, use the high
+performance model DG4V-3 (blank/H performance code at section 3).
+
+### Typical response times (ms)
+
+Measured at 100% rated coils, full spool displacement of "2C" spool:
+
+| | DG4V-3 | DG4V-3S (X5) | DG4V-3R |
+|---|---|---|---|
+| Test flow rate P-A, B-T | 40 l/min (10.5 USgpm) | 20 l/min (5.3 USgpm) | 20 l/min (5.3 USgpm) |
+| Test pressure | 175 bar (2537 psi) | 175 bar (2537 psi) | 175 bar (2537 psi) |
+| AC energizing | 15 ms | 100 ms | 18 ms |
+| AC de-energizing | 23 ms | 100 ms | 32 ms |
+| DC energizing | 45 ms | 60 ms | 60 ms |
+| DC de-energizing | 28 ms | 40 ms | 40 ms |
+
+### AC coil power consumption (VA RMS)
+
+Sub-columns: Initial VA / Holding VA
+
+| Coil type | DG4V-3 Initial | DG4V-3 Holding | DG4V-3S (X5) Initial | DG4V-3S (X5) Holding | DG4V-3R |
+|---|---|---|---|---|---|
+| Dual frequency — 50 Hz (full power) | 280 | 61 | 280 | 61 | N/A |
+| Dual frequency — 60 Hz (full power) | 300 | 58 | 300 | 58 | N/A |
+| Low power coils "BL" and "DL" ▲ — 50 Hz | 170 | 37 | N/A | N/A | N/A |
+| Low power coils "BL" and "DL" ▲ — 60 Hz | 190 | 37 | N/A | N/A | N/A |
+
+▲ Not available with "N" (no-spring detented) models.
+
+### DC coil power consumption at rated voltage and 20°C (68°F)
+
+| Coil type | DG4V-3 | DG4V-3S (X5) | DG4V-3R |
+|---|---|---|---|
+| **Full power coils** | | | |
+| 12V, model type "G" | 30W | 30W | N/A |
+| 24V, model type "H" | 30W | 30W | N/A |
+| **Low power coils** | | | |
+| 12V, model type "GL" | 18W | N/A | N/A |
+| 24V, model type "HL" | 18W | N/A | N/A |
+| 24V, HM Coil | N/A | N/A | 8W |
 
 ### Physical dimensions
 
@@ -344,12 +385,10 @@ From the Operating Data table on page 5 of BC442280316180en-000201:
 | Dual solenoid | 219.43 mm (8.639 in) | 47.0 mm (1.850 in) | 23.50 mm (0.925 in) |
 | Single solenoid | 155.72 mm (6.130 in) | 47.0 mm (1.850 in) | 23.50 mm (0.925 in) |
 
-Weight: ~1.8–2.2 kg (see `hydraulics_engineer.md` DG4V-3 vs DG4V-5 table).
-
 ### Bolt kit / seal kit
 
-- Interface Seal Kit number for DG4V-3: 02-141871 (for use with D03 / ISO 4401-03)
-- Bolt Kit for ISO 4401-03: M6 × 1.0 fixing bolts, four-bolt pattern
+- Interface Seal Kit for DG4V-3: 02-141871 (D03 / ISO 4401-03)
+- Bolt Kit: M6 × 1.0 fixing bolts, four-bolt pattern
 
 ---
 
