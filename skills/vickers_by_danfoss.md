@@ -58,8 +58,8 @@ along with their adjacent separator if the entire group becomes empty.
 | 08 | `flag_symbol` | **true** | `M` (always — indicates electrical options follow) |
 | 09 | `spool_switch` | false | blank = none (omitted); `S7` = spool position monitoring switch, single solenoid valves only (see coil types 6 and 10); `S9` = switch per separate catalogue AF458770480968en-000101 |
 | 10 | `coil_type` | false | `U` = ISO4400 DIN43650; `U1` = ISO4400 with PG11 plug; `KU` = top exit flying lead 150mm; `FW` = flying lead ½" NPT; `FTW` = flying lead terminal block ½" NPT; `FPA3W` = 3-pin connector ½" NPT; `FPA5` = 5-pin connector ½" NPT; `KUP4` = Junior Timer AMP; `KUP5`/`KUP6` = Packard/Deutsch; `X5` = explosion proof |
-| 11 | `surge_suppressor` | false | blank = none (omitted); `D1` = diode positive bias (DC only); `D2` = diode negative bias (DC only); `D7` = Transorb type — see Page 14 for circuit details |
-| 12 | `indicator_light` | false | blank = none (omitted); `L` = solenoid indicator light (flying lead coil types only, excluding FPA\*\*W) |
+| 11 | `indicator_light` | false | blank = none (omitted); `L` = solenoid indicator lights (flying lead coil types only, excluding FPA\*\*W) |
+| 12 | `surge_suppressor` | false | blank = none (omitted); `D1` = diode positive bias; `D2` = diode negative bias; `D7` = Transorb type — see Page 14 for circuit details |
 | 13 | `coil_rating` | false | **Single or two-letter code — no tank pressure digit.** `G` = 12VDC; `GL` = 12VDC variant; `H` = 24VDC; `HL` = 24VDC variant; `HM` = 24VDC 8-watt (standard performance DG4V-3-R); `DS` = 28VDC 30-watt; `B` = 110VAC 50Hz/120VAC 60Hz; `D` = 220VAC 50Hz/240VAC 60Hz |
 | **14** | **`tank_pressure_code`** | **false** | **Single digit — NOT a bar value, but a T-port pressure specification code.** See table below. 7 is the most common (DC high performance at 207 bar / 3000 psi). |
 | 15 | `design_number` | false | `60` = Basic design; `61` = Type 8 spool (mandatory for spool types starting with 8) |
@@ -71,10 +71,10 @@ is a **code**, not a pressure value — code 7 ≠ 7 bar:
 
 | Code 14 | T-port max pressure | Applies to | Restriction |
 |---|---|---|---|
-| `4` | 70 bar (1000 psi) | All models | X5 coil type only |
+| `4` | 70 bar (1000 psi) | All models | **X5 coil type only** ▲ |
 | `6` | 207 bar (3000 psi) | AC high performance models, incl. S7 switch | — |
 | `7` | 207 bar (3000 psi) | **DC high performance models, incl. S7 switch** | — **(most common)** |
-| `8` | 160 bar (2300 psi) | AC high performance models, lower T-port rating | X5 coil type only |
+| `8` | 160 bar (2300 psi) | AC high performance models, lower T-port rating | — |
 
 Guide note: "Refer to Operating Data for port T pressure ratings."
 
@@ -387,26 +387,28 @@ It is documented in a separate catalogue (ref: AF458770480968en-000101).
 
 ---
 
-## 8. Surge Suppression
+## 8. Surge Suppression (Section 12)
 
-From page 14 of the guide:
+From page 14 of the guide. The three codes at section 12 of the ordering code:
 
-### Diode suppressor (code `D` or `D1`)
+### D1 — Diode positive bias
 - Diode in parallel with coil, positive bias
-- DC voltage **only** — polarity dependent
-- Significantly reduces voltage spike on valve disconnect
-- Recommended for DC installations
-- May slightly increase valve drop-out time
+- Significantly reduces voltage spike on disconnect
+- Recommended for DC coils
+- May slightly increase drop-out time
 
-### Transsorb / Zener suppressor (code `ZT` or `Z`)
-- Bidirectional voltage-clamping device in parallel with coil
-- DC voltage only
-- Faster drop-out than diode suppressor
+### D2 — Diode negative bias
+- Diode in parallel with coil, negative bias
+- Same function as D1 but reversed polarity
+
+### D7 — Transorb type
+- Transorb (bidirectional voltage-clamping) device in parallel with coil
+- Faster drop-out than diode suppressors
 - Higher clamping voltage than diode — spike not fully suppressed
+- See Page 14 of the guide for circuit details
 
-### No suppressor (blank)
+### Blank — no surge suppressor
 - Default if no surge code specified
-- Only acceptable with AC valves (AC coils have built-in suppression in some designs)
 - Not recommended for DC coils — voltage transients can damage PLC outputs
 
 ---

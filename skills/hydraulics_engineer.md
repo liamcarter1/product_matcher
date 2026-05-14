@@ -55,15 +55,35 @@ Many segments have a default option marked "no code" or left blank. This means:
 
 ### Worked example: Danfoss `DG4V-3-2C-M-U-H7-60`
 
-| Pos | Code | Meaning |
+The guide has 15 ordering code positions (numbered 1–15 in the page 3 description
+table; section 16 special-features codes are omitted for standard products).
+The code `DG4V-3-2C-M-U-H7-60` uses these sections:
+
+| Guide section | Code | Meaning |
 |---|---|---|
-| 1 | DG4V | Wet-armature solenoid directional valve (D=directional, G=gasket-mounted, 4V=4-way variable spool) |
-| 2 | 3 | Size 6 / NG06 / D03 / CETOP 3 mounting |
-| 3 | 2C | Spool variant — closed centre, no crossover in transition (BLOCKED canonical pattern) |
-| 4 | M | Special-features identifier (modifications follow) |
-| 5 | U | DIN 43650 Form-A connector (3-pin industrial) |
-| 6 | H7 | 24V DC coil (H family, 7 = 60 Hz wiring) |
-| 7 | 60 | Design series (interchangeable with 61, 62) |
+| 2 | `DG4V-3` | Series: D=Directional, G=Gasket mounted, 4=Solenoid, V=350 bar rated, 3=ISO4401 D03 |
+| 4 | `2` | Spool type number (refers to page 4 functional symbols) |
+| 5 | `C` | Spool spring: C = spring centred (concatenates with section 4 to form `2C`) |
+| 8 | `M` | Flag symbol — fixed, always M, signals electrical options follow |
+| 10 | `U` | Coil type: ISO4400 DIN43650 connector |
+| 13 | `H` | Coil rating: 24VDC — **single letter only, no digit suffix** |
+| 14 | `7` | Tank pressure code: 7 = 207 bar (3000 psi) DC high performance — **NOT 7 bar** |
+| 15 | `60` | Design: 60 = basic design; 61 mandatory for Type 8 spool |
+
+Sections 1, 3, 6, 7, 9, 11, 12 are all blank (default / omitted) for this code.
+
+**CRITICAL — section 14 is a pressure-specification code, not a bar value:**
+- Code `4` → 70 bar (1000 psi), X5 coil type only ▲
+- Code `6` → 207 bar (3000 psi), AC high performance models (incl. S7 switch)
+- Code `7` → 207 bar (3000 psi), DC high performance models (incl. S7 switch) ← most common
+- Code `8` → 160 bar (2300 psi), AC high performance, lower tank port rating (no X5 restriction)
+- ▲ The X5 restriction applies only to code 4, not to code 8
+
+**CRITICAL — coil rating (section 13) is a letter code only:**
+`G`=12VDC, `GL`=12VDC variant, `H`=24VDC, `HL`=24VDC variant, `HM`=24VDC 8W,
+`DS`=28VDC 30W, `B`=110VAC, `D`=220VAC.
+The digit after the letter in assembled codes (`H7`, `G7`, `B6`) is section 14
+(tank pressure code), not part of the coil rating.
 
 For other DG4V suffixes you may encounter:
 - `FS` — Soft Shift (factory orifice, 200–500 ms shift). **Do not substitute with standard valve.**
@@ -147,25 +167,29 @@ documentation, not a separate segment. If you see suffixes explained in section 
 of the ordering code page, those suffixes are embedded in the spool type code itself;
 no additional segment is needed.
 
-Worked code breakdown for `DG4V-3-2C-M-U-H7-60`:
+Worked code breakdown for `DG4V-3-2C-M-U-H7-60` — guide sections (non-blank only):
 
-| Pos | Code | is_fixed | Segment name | Notes |
+| Guide sec | Code | is_fixed | Segment name | Notes |
 |---|---|---|---|---|
-| 1 | `DG4V` | true | series | |
-| 2 | `3` | true | valve_size | |
-| 3 | `2C` | false | spool_type | Many options: 2A, 2AL, 2C, 0A, 8C, 6C, … |
-| 4 | `M` | **true** | model_designator | Danfoss guide only; Vickers guide has C/A/D here |
-| 5 | `U` | false | coil_connector | U, D, L, … |
-| 6 | `H7` | false | coil_voltage | H7=24VDC, G7=12VDC, A7=110VAC, … |
-| 7 | `(V)` | false | spool_8_modifier | **For 8-series spools only**: code = "V" (mandatory, stated on page 4 of the guide). For all other spools: code = "" (no code, omitted from model code). This is section 7 of the combination table. Extract as variable with options `""` and `"V"`, with constraint: spool 8* → V. |
-| 8 | `60` | false | design_number | **NOT freely interchangeable**: 60 = standard; **61 mandatory for spool 8*** (8C, 8AL, etc.); 62 where available. This is section 8 of the combination table. |
-| 9 | `4` | false | tank_back_pressure_bar | T-port back-pressure; options **4, 6, 7, 8 bar**. 7 is most common, 4 is least. Content is in a graphics diagram — inject all four options if only one extracted. |
+| 2 | `DG4V-3` | true | series | Series + size combined; D=Directional, G=Gasket, 4=Solenoid, V=350bar, 3=D03 |
+| 4 | `2` | false | spool_type | Numeric spool identifier from page 4 symbols; options: 0, 2, 3, 6, 8, 22 … |
+| 5 | `C` | false | spool_spring | Spring suffix: A, AL, B, BL, C, N — concatenates with sec 4 → `2C` |
+| 7 | `(V)` | false | vm_modifier | blank=M style; `V`=VM style (mandatory for spool 8) |
+| 8 | `M` | **true** | flag_symbol | Always `M` — fixed, signals electrical options follow |
+| 10 | `U` | false | coil_type | Coil/connector: U, U1, KU, FW, FTW, KUP4, KUP5, X5 … |
+| **11** | `(L)` | false | **indicator_light** | blank=none; `L`=solenoid indicator lights (flying lead types only, excl. FPA\*\*W) |
+| **12** | `(D*)` | false | **surge_suppressor** | blank=none; `D1`=diode positive bias; `D2`=diode negative bias; `D7`=Transorb |
+| 13 | `H` | false | coil_rating | **Letter code only — no digit suffix.** G=12VDC, GL=12VDC var, H=24VDC, HL=24VDC var, HM=24VDC 8W, DS=28VDC 30W, B=110VAC, D=220VAC |
+| 14 | `7` | false | tank_pressure_code | **Pressure-spec code — NOT a bar value.** 4=70bar (X5 only); 6=207bar AC HP; 7=207bar DC HP (most common); 8=160bar AC HP |
+| 15 | `60` | false | design_number | 60=basic; **61 mandatory for spool type 8** |
 
-**Inter-segment constraints for 8-series spools (BOTH must be returned in "constraints"):**
-- Spool 8* → section 7 (spool_8_modifier) = `"V"` — stated on page 4 of the Danfoss guide
-- Spool 8* → section 8 (design_number) = `"61"` — stated on page 4 of the Danfoss guide
+Sections 1, 3, 6, 9, 11, 12 are blank for this standard code and omitted.
 
-Without both constraints, the generator produces invalid codes like `DG4V-3-8C-M-U-H7-60` (missing V, wrong design).
+**Inter-segment constraints for spool type 8 (BOTH required):**
+- Spool 8 → section 7 (vm_modifier) = `"V"` — page 4: "*Spool 8 only offered in VM style"
+- Spool 8 → section 15 (design_number) = `"61"` — page 3 design table: "61 = Type 8 spool"
+
+Without both constraints the generator produces invalid codes like `DG4V-3-8C-M-U-H7-60`.
 
 ### Ordering code diagrams show ONE representative value — footnotes have ALL options
 
@@ -539,10 +563,16 @@ Always normalise to these canonical forms:
 
 | Raw value | Normalised |
 |---|---|
-| `24VDC`, `24 V DC`, `G24`, `H7` | `coil_voltage`: 24, `voltage_type`: DC |
-| `12VDC`, `G12`, `G7` | `coil_voltage`: 12, `voltage_type`: DC |
-| `W230`, `230V 50/60Hz`, `B` | `coil_voltage`: 230, `voltage_type`: AC |
-| `W110`, `110V 60Hz`, `A` | `coil_voltage`: 110, `voltage_type`: AC |
+| `24VDC`, `24 V DC`, `G24`, `H`, `HL` | `coil_voltage`: 24, `voltage_type`: DC |
+| `12VDC`, `G12`, `G`, `GL` | `coil_voltage`: 12, `voltage_type`: DC |
+| `W230`, `230V 50/60Hz`, `D` | `coil_voltage`: 230, `voltage_type`: AC |
+| `W110`, `110V 60Hz`, `B` | `coil_voltage`: 110, `voltage_type`: AC |
+
+Note: For Vickers by Danfoss DG4V-3, the coil rating code (section 13) is a
+single or two-letter code with **no digit suffix** — `H`, `HL`, `HM`, `G`, `GL`,
+`DS`, `B`, `D`.  The digit that follows in the assembled code (e.g. `7` in `H7`)
+is the **tank pressure code** at section 14, not part of the coil rating.
+`H7`, `G7`, `B6` are NOT voltage codes — they are two adjacent sections concatenated.
 | `350 bar`, `5076 psi` | `max_pressure_bar`: 350 |
 | `80 l/min`, `21 US gpm` | `max_flow_lpm`: 80 |
 | `1.95 kg`, `4.3 lbs` | `weight_kg`: 1.95 |
@@ -551,25 +581,32 @@ Always normalise to these canonical forms:
 | `ISO 4401-03-02-0-05` | `mounting_pattern`: ISO 4401-03 |
 | `NG6`, `D03`, `Size 6`, `CETOP 3` | `valve_size`: 6 |
 
-### Voltage code hierarchy
+### Voltage code hierarchy — Vickers by Danfoss DG4V-3
 
-Danfoss/Vickers coil codes follow a two-tier convention:
+Vickers by Danfoss coil rating codes (guide section 13) are **single or two-letter
+codes with no digit suffix**:
 
-**Tier 1 — voltage family (single character):**
-- `G` = 12V DC family
-- `H` = 24V DC family
-- `A` = 110V AC family
-- `B` = 220V AC family (some sources show `B` for 110V — context-dependent;
-  consult the specific Coil Rating section of the user guide being parsed)
+| Code | Voltage | Type | Notes |
+|---|---|---|---|
+| `G` | 12V | DC | Standard 12VDC |
+| `GL` | 12V | DC | 12VDC variant |
+| `H` | 24V | DC | Most common |
+| `HL` | 24V | DC | 24VDC variant |
+| `HM` | 24V | DC | 8-watt coil (standard performance, used with R at section 3) |
+| `DS` | 28V | DC | 30-watt high-power |
+| `B` | 110V | AC | 50Hz / 120VAC 60Hz |
+| `D` | 220V | AC | 50Hz / 240VAC 60Hz |
 
-**Tier 2 — specific variant (family + frequency code):**
-- `G7` = 12V DC, 60 Hz wiring (1.6 A steady state)
-- `H7` = 24V DC, 60 Hz wiring (0.8 A steady state)
-- (other digits indicate other frequency/connector combinations)
+**`G7`, `H7`, `B6` are NOT voltage codes.** In the assembled model code, the
+letter (section 13, coil rating) and the digit (section 14, tank pressure code)
+are concatenated with no separator. When you see `H7` in a code, decode as:
+`H` = 24VDC coil + `7` = DC high performance tank pressure spec (207 bar).
 
-The agent should accept and parse both tiers. When a code appears as a single
-letter (`G`, `H`, `A`, `B`) without a digit, infer from the Coil Rating section of
-the user guide being parsed.
+The digit after the letter is always one of four tank pressure codes:
+4 (70 bar, X5 only), 6 (207 bar AC HP), 7 (207 bar DC HP), 8 (160 bar AC HP).
+
+The agent should normalise any coil rating letter directly to voltage:
+`G`/`GL` → 12VDC, `H`/`HL`/`HM` → 24VDC, `DS` → 28VDC, `B` → 110VAC, `D` → 220VAC.
 
 **Diagnostic resistance fingerprints** (useful for the chat agent answering
 troubleshooting questions, not for matching):
