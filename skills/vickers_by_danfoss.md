@@ -23,63 +23,141 @@ specific ordering code structure, datasheet layout, and extraction failure modes
 
 ---
 
-## 2. DG4V-3 Ordering Code — Complete Structure
+## 2. DG4V-3 Ordering Code — Complete Structure (15 Positions)
 
-### Template
+Page 3 of the user guide (BC442280316180en-000201) shows a model code description
+table with 16 numbered rows.  Section 16 (Special features: EN21, EN38 approval codes)
+is excluded here as it is not relevant to standard product matching.  The 15 working
+sections assemble as follows, with hyphens as separators between the major groups:
+
+### Template (from page 3 of BC442280316180en-000201)
 
 ```
-[seal] DG4V-3 - [spool] - [style] - [connector][voltage][surge][switch] - [design] - [tank]
- 01      02       03         04          05        06      07     08          09         10
+** DG4V—3  (*)  -  **  *(L)  -  (**)  -  (V)  M  -  (S*)  -  ****  D*  (L)  -  *  *  -  6*
+ 1    2      3      4    5        6        7    8     9        10    11   12   13  14    15
 ```
 
-No spaces in the actual code.  `seal` is a prefix before `DG4V`, not after a hyphen.
-The hyphens shown are literal code separators; `connector` and `voltage` are concatenated
-with no separator between them.
+Boxes 1–16 are numbered in the guide; section 16 `(EN***)` is excluded here (special
+approval codes not relevant to standard matching).
 
-Full extended example:
-`DG4V-3-2C-M-UH7D-60-7`
-`FPA-DG4V-3-8C-VM-UH7-61-7`
+Separators: each `-` in the template is a literal hyphen in the assembled code.
+Positions shown in `( )` are optional — when blank they are **omitted from the code**
+along with their adjacent separator if the entire group becomes empty.
 
-Abbreviated example (common, omits surge and tank when default):
-`DG4V-3-2C-M-U-H7-60`
+### All 15 positions
 
-### Position definitions
-
-| Pos | Segment name | is_fixed | Options |
+| Pos | Segment name | is_fixed | Valid codes (from page 3 guide table) |
 |---|---|---|---|
-| 01 | `seal_type` | false | blank = Viton/NBR (default, omitted); `FPA` = PTFE (Teflon); `FPA**W` = PTFE body seals + nitrile wiper seals |
-| 02 | `series` | **true** | `DG4V-3` (always) |
-| 03 | `spool_type` | false | See spool table in section 3 |
-| 04 | `style` | false | `M` = standard (Sol. A on B-port side, P→A on activation); `VM` = reversed (Sol. A on A-port side, A→T on activation). **Spool 8* MUST use VM.** |
-| 05 | `coil_connector` | false | See connector table in section 4 |
-| 06 | `coil_voltage` | false | See voltage table in section 5 |
-| 07 | `surge_suppressor` | false | blank = none (omitted); `D` or `D1` = diode (DC only, recommended); `ZT` = Transsorb/Zener (DC only) |
-| 08 | `spool_switch` | false | blank = none (omitted); `S7` = DC spool position indicator (20–32VDC, M12 4-pin); `X5` = explosion-proof switch |
-| 09 | `design_number` | false | `60` = standard; `61` = **mandatory for spool types beginning with 8**; `62`, `63` = other variants |
-| 10 | `tank_back_pressure_bar` | false | `4`, `6`, `7`, `8` — T-port back-pressure rating in bar. **7 is the most common**; 4 is least common. Content is in a graphics diagram footnote — inject all four if only one is extracted. |
+| 01 | `seal_type` | false | blank = Viton (omitted); `F6` = Buna Nitrile / High CAN |
+| 02 | `series` | **true** | `DG4V-3` — D=Directional, G=Gasket mounted, 4=Solenoid operated, V=350 bar rated (P/A/B), 3=ISO4401 Size D03 |
+| 03 | `performance` | false | blank = default performance (omitted); `R` = Standard performance with 8-watt coil; `H` = High performance; `S` = Standard performance, X5 only |
+| 04 | `spool_type` | false | Numeric identifier from Page 4 spool symbols: `0`, `2`, `3`, `6`, `8`, `12`, `22`, `23`, `35`, `52`… |
+| 05 | `spool_spring` | false | `A` = spring offset end-to-end (RH); `AL` = same, LH build; `B` = spring offset end-to-centre (RH); `BL` = same, LH build; `C` = spring centred; `N` = no spring / detented |
+| 06 | `manual_override` | false | blank = plain override at solenoid end(s) (omitted); `H` = waterresistant override; `Z` = no overrides at either end; `W` = twist and lock override; `A` = no override at non-solenoid end (single solenoid only) |
+| 07 | `vm_modifier` | false | blank = standard M orientation (omitted); `V` = VM style — solenoid A at port B end. **Mandatory for spool type 8.** See page 4 for solenoid identification table. |
+| 08 | `flag_symbol` | **true** | `M` (always — indicates electrical options follow) |
+| 09 | `spool_switch` | false | blank = none (omitted); `S7` = spool position monitoring switch, single solenoid valves only (see coil types 6 and 10); `S9` = switch per separate catalogue AF458770480968en-000101 |
+| 10 | `coil_type` | false | `U` = ISO4400 DIN43650; `U1` = ISO4400 with PG11 plug; `KU` = top exit flying lead 150mm; `FW` = flying lead ½" NPT; `FTW` = flying lead terminal block ½" NPT; `FPA3W` = 3-pin connector ½" NPT; `FPA5` = 5-pin connector ½" NPT; `KUP4` = Junior Timer AMP; `KUP5`/`KUP6` = Packard/Deutsch; `X5` = explosion proof |
+| 11 | `surge_suppressor` | false | blank = none (omitted); `D1` = diode positive bias (DC only); `D2` = diode negative bias (DC only); `D7` = Transorb type — see Page 14 for circuit details |
+| 12 | `indicator_light` | false | blank = none (omitted); `L` = solenoid indicator light (flying lead coil types only, excluding FPA\*\*W) |
+| 13 | `coil_rating` | false | **Single or two-letter code — no tank pressure digit.** `G` = 12VDC; `GL` = 12VDC variant; `H` = 24VDC; `HL` = 24VDC variant; `HM` = 24VDC 8-watt (standard performance DG4V-3-R); `DS` = 28VDC 30-watt; `B` = 110VAC 50Hz/120VAC 60Hz; `D` = 220VAC 50Hz/240VAC 60Hz |
+| **14** | **`tank_pressure_code`** | **false** | **Single digit — NOT a bar value, but a T-port pressure specification code.** See table below. 7 is the most common (DC high performance at 207 bar / 3000 psi). |
+| 15 | `design_number` | false | `60` = Basic design; `61` = Type 8 spool (mandatory for spool types starting with 8) |
 
-### Worked examples
+### Section 14 — Tank pressure rating codes (from page 3 guide table)
 
-| Code | Breakdown |
-|---|---|
-| `DG4V-3-2C-M-U-H7-60` | Standard, closed-centre, M-style, DIN connector, 24VDC, design 60 |
-| `DG4V-3-8C-VM-U-H7-61` | Spool 8C, reversed solenoid (VM mandatory), 24VDC, design 61 (mandatory) |
-| `FPA-DG4V-3-2C-M-KUP5-H7-60` | PTFE seals, Deutsch connector, 24VDC, design 60 |
-| `DG4V-3-0A-M-U-A7-60` | Open centre, DIN connector, 110VAC 50Hz, design 60 |
-| `DG4V-3-22A-M-U-H7-60-7` | Selector spool, 24VDC, design 60, 7 bar T-port |
+The four codes at section 14 specify the T-port maximum pressure rating.  The digit
+is a **code**, not a pressure value — code 7 ≠ 7 bar:
+
+| Code 14 | T-port max pressure | Applies to | Restriction |
+|---|---|---|---|
+| `4` | 70 bar (1000 psi) | All models | X5 coil type only |
+| `6` | 207 bar (3000 psi) | AC high performance models, incl. S7 switch | — |
+| `7` | 207 bar (3000 psi) | **DC high performance models, incl. S7 switch** | — **(most common)** |
+| `8` | 160 bar (2300 psi) | AC high performance models, lower T-port rating | X5 coil type only |
+
+Guide note: "Refer to Operating Data for port T pressure ratings."
+
+Code 7 is the most common because the majority of DG4V-3 valves are DC-powered
+high-performance models.  In the assembled code `H7`, `G7`, `B6`, etc.:
+- The letter (pos 13) is the coil rating
+- The digit (pos 14) is the tank pressure code
+They are **concatenated with no separator** between them.
+
+### Worked examples — correct position mapping
+
+**Standard DC valve:** `DG4V-3-2C-M-U-H7-60`
+
+| Code | Pos | Meaning |
+|---|---|---|
+| `DG4V-3` | 02 | Series (fixed) |
+| `2` | 04 | Spool type 2 |
+| `C` | 05 | Spring centred |
+| `M` | 08 | Flag symbol (fixed) |
+| `U` | 10 | DIN 43650 connector |
+| `H` | 13 | Coil: 24VDC |
+| `7` | 14 | Tank pressure code: DC high performance, 207 bar |
+| `60` | 15 | Basic design |
+
+Positions 01, 03, 06, 07, 09, 11, 12 all blank → omitted. Result: `DG4V-3-2C-M-U-H7-60` ✓
+
+---
+
+**Spool 8, VM style:** `DG4V-3-8C-VM-U-H7-61`
+
+| Code | Pos | Meaning |
+|---|---|---|
+| `8` | 04 | Spool type 8 |
+| `C` | 05 | Spring centred |
+| `V` | 07 | VM modifier — **mandatory for spool 8** |
+| `M` | 08 | Flag symbol (fixed) |
+| `U` | 10 | DIN connector |
+| `H` | 13 | 24VDC |
+| `7` | 14 | DC high performance, 207 bar |
+| `61` | 15 | Type 8 spool design — **mandatory for spool 8** |
+
+Result: `DG4V-3-8C-VM-U-H7-61` ✓
+
+---
+
+**LH build:** `DG4V-3-2AL-M-U-H7-60`
+
+| Code | Pos | Meaning |
+|---|---|---|
+| `2` | 04 | Spool type 2 |
+| `A` + `L` | 05 | Spring offset end-to-end, **left-hand build** |
+| `H` | 13 | 24VDC |
+| `7` | 14 | DC HP, 207 bar |
+| `60` | 15 | Basic design |
+
+Positions 04+05 concatenate to `2AL`. Result: `DG4V-3-2AL-M-U-H7-60` ✓
+
+---
+
+**Standard 8-watt coil:** `DG4V-3-R2C-M-U-HM7-60`
+
+| Code | Pos | Meaning |
+|---|---|---|
+| `R` | 03 | Standard performance (8-watt coil) |
+| `2` | 04 | Spool type 2 |
+| `C` | 05 | Spring centred |
+| `HM` | 13 | Coil: 24VDC 8-watt (standard performance) |
+| `7` | 14 | DC HP, 207 bar |
+| `60` | 15 | Basic design |
+
+Result: `DG4V-3-R2C-M-U-HM7-60` ✓
 
 ### Spool 8-series mandatory constraints
 
-**Both** of the following constraints MUST be returned in the `"constraints"` array
-whenever spool types starting with `8` are present in the guide:
+Both constraints MUST appear in the `"constraints"` array whenever spool type 8 is present:
 
 ```json
 [
   {
     "when_segment": "spool_type",
     "when_value_regex": "^8",
-    "enforce_segment": "style",
-    "enforce_value": "VM"
+    "enforce_segment": "vm_modifier",
+    "enforce_value": "V"
   },
   {
     "when_segment": "spool_type",
@@ -90,30 +168,8 @@ whenever spool types starting with `8` are present in the guide:
 ]
 ```
 
-Page 4 of the guide states explicitly:
-- "*Spool 8 only offered in VM style nomenclature"
-- Design 61 required (stated in the ordering code footnotes)
-
-Generating `DG4V-3-8C-M-U-H7-60` would be an invalid code that Danfoss cannot supply.
-
-### "V" modifier in the model code (spool_8_modifier position)
-
-The `hydraulics_engineer.md` section 1 documents a position 7 called `spool_8_modifier`
-whose code is `"V"` for spool 8* and `""` (blank) for all others.  This `V` is the
-same as the `VM` style — the `V` appears in the ordering code immediately before `M`,
-making `VM` visible in the code.  When processing this guide, model it as two distinct
-approaches:
-
-**Option A** (single style segment, recommended): `style` segment with options `"M"` and
-`"VM"`.  The `V` is embedded in the style option; no separate `spool_8_modifier`
-segment is needed.
-
-**Option B** (two segments, matching `hydraulics_engineer.md` position 7–8): separate
-`spool_8_modifier` segment (options `""` and `"V"`) followed by `M` (fixed).
-Constraint: spool 8* → modifier = `"V"`.
-
-Either approach is valid; the assembled model code must contain `VM` for spool 8*
-and `M` for all others.
+Page 4 of the guide: "*Spool 8 only offered in VM style nomenclature."
+Generating `DG4V-3-8C-M-U-H7-60` is an invalid code Danfoss cannot supply.
 
 ---
 
@@ -216,34 +272,47 @@ ordering code.
 
 ---
 
-## 5. Coil Voltage Codes
+## 5. Coil Rating Codes (Position 13)
 
-### Danfoss/Vickers DG4V-3 voltage codes
+Position 13 of the ordering code is the **coil rating** — a one or two letter code.
+It does **not** include a digit.  The digit that follows it in the assembled code
+(position 14) is the tank pressure code, not part of the coil rating.
 
-| Code | Voltage | Type | Frequency | Notes |
+### Coil rating codes (from page 3, section 13)
+
+| Code | Voltage | Type | Watt | Notes |
 |---|---|---|---|---|
-| **G7** | 12V | DC | 60 Hz wiring | Lower voltage DC |
-| **H7** | 24V | DC | 60 Hz wiring | **Most common**; 0.8A steady state ≈ 26Ω coil resistance |
-| **A7** | 110V | AC | 50Hz | Use AC-specific connector types |
-| **B7** | 115V | AC | 60Hz | North American AC voltage |
-| **C7** | 220V | AC | 50/60Hz | European mains |
-| **D7** | 24V | DC | — | Alternative DC 24V variant (high-power coil) |
+| **G** | 12V | DC | — | Standard 12VDC coil |
+| **GL** | 12V | DC | — | 12VDC variant |
+| **H** | 24V | DC | — | **Most common DC coil** |
+| **HL** | 24V | DC | — | 24VDC variant |
+| **HM** | 24V | DC | 8W | Standard performance (DG4V-3-R); associated with R at position 3 |
+| **DS** | 28V | DC | 30W | High-wattage DC |
+| **B** | 110V | AC | — | 50Hz/120VAC 60Hz |
+| **D** | 220V | AC | — | 50Hz/240VAC 60Hz |
 
-### Voltage code hierarchy (tier 1 + tier 2)
+### Common combinations seen in practice
 
-The single letter (`G`, `H`, `A`, `B`) is the voltage family; the digit (`7`) is the
-frequency/wiring variant.  See `hydraulics_engineer.md` section 6 for the full hierarchy.
+Because the most common tank pressure code is `7` (DC high performance, 207 bar),
+the codes `G7`, `H7`, `B6`, `D6` appear frequently in assembled ordering codes.
+These are NOT two-character voltage codes — they are pos 13 + pos 14 concatenated:
+
+| Assembled | Pos 13 (coil) | Pos 14 (tank code) | Meaning |
+|---|---|---|---|
+| `H7` | H = 24VDC | 7 = DC HP 207 bar | 24VDC, DC high performance |
+| `G7` | G = 12VDC | 7 = DC HP 207 bar | 12VDC, DC high performance |
+| `B6` | B = 110VAC | 6 = AC HP 207 bar | 110VAC, AC high performance |
+| `D6` | D = 220VAC | 6 = AC HP 207 bar | 220VAC, AC high performance |
+| `HM7` | HM = 24VDC 8W | 7 = DC HP 207 bar | 24VDC 8-watt standard performance |
 
 ### AC coil characteristics (from page 5, Operating Data)
 
 | Spec | At 50 Hz | At 60 Hz |
 |---|---|---|
 | Dual frequency power | 200 W | 250 W |
-| Performance | Standard | Standard |
 
-AC coils draw 4–5× steady-state current at inrush.  If the spool sticks, the coil
-burns out at ~137 W vs ~22 W normal.  Recommend DC coils for reliability-critical
-applications.
+AC coils draw 4–5× steady-state current at inrush.  Recommend DC coils for
+reliability-critical applications.
 
 ---
 
@@ -404,14 +473,20 @@ fewer than 50 characters per page from the DG4V-3 guide.  **Vision is required f
 every substantive page.**  Do NOT assume any content is in the text layer.  Any
 `ordering_code.py` call on this guide must use the vision path.
 
-### 2. Tank pressure options appear ONLY in a diagram footnote (page 3)
+### 2. Section 14 (tank pressure codes) are misread as bar values
 
-The ordering code diagram shows `4` as the representative tank pressure.  The footnote
-table (also on page 3) lists all four options: **4, 6, 7, 8 bar**.  If vision misses
-the footnote area, only `4` is extracted and the system generates 1/4 of the tank
-pressure variants.  The injection constant `_DANFOSS_TANK_PRESSURE_OPTIONS` handles
-this failure mode automatically — it will add the missing options if fewer than 4
-are extracted.
+The four codes at section 14 (`4`, `6`, `7`, `8`) are **specification codes, not
+bar values**.  Code `7` means DC high performance at 207 bar (3000 psi), not 7 bar.
+Specifically:
+- `4` = 70 bar (1000 psi), X5 only
+- `6` = 207 bar (3000 psi), AC high performance
+- `7` = 207 bar (3000 psi), DC high performance ← **most common**
+- `8` = 160 bar (2300 psi), AC high performance lower rating, X5 only
+
+If vision only extracts `4` from the diagram (which shows one representative value),
+the injection constant `_DANFOSS_TANK_PRESSURE_OPTIONS` will add codes 6, 7, 8.
+The `maps_to_value` for each code must be the T-port pressure in bar (70, 207, 207, 160),
+not the code digit itself.
 
 ### 3. Spool 8 requires BOTH VM style AND design 61
 
