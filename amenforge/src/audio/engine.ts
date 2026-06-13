@@ -118,16 +118,17 @@ export class AudioEngine {
       const slice = this.slices[hit.slice % this.slices.length];
       const ratchet = Math.max(1, hit.ratchet);
       if (ratchet === 1) {
-        // Single hit: let the chop ring out its full natural length (the slice
-        // length shown in the waveform) instead of gating it to one step.
+        // Single hit: the chop plays for `gate` × its natural length (the slice
+        // shown in the waveform). gate = 1 rings out fully; lower = tighter.
         this.voices.trigger(slice, {
           pitch: hit.pitch,
           reverse: hit.reverse,
           gain: hit.gain,
           time: time + swing,
+          gate: p.gate,
         });
       } else {
-        // Ratchet roll: tight retriggers, capped so the stutters stay distinct.
+        // Ratchet roll: tight retriggers, also capped so the stutters stay distinct.
         const sub = stepDur / ratchet;
         for (let j = 0; j < ratchet; j++) {
           this.voices.trigger(slice, {
@@ -136,6 +137,7 @@ export class AudioEngine {
             gain: hit.gain,
             time: time + swing + j * sub,
             maxDuration: sub * 1.8,
+            gate: p.gate,
           });
         }
       }

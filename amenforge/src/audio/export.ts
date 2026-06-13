@@ -74,8 +74,10 @@ export async function renderPatternToWav(
         const sub = stepDur / ratchet;
         const buf = extractSlice(ctx, audioBuffer, slice, hit.reverse);
         const rate = semitonesToRate(hit.pitch);
-        // A single hit rings out its full slice; rolls are capped to stay tight.
-        const naturalDur = buf.duration / rate;
+        // Gate scales the slice's natural length (1 = full ring-out); rolls are
+        // additionally capped so the stutters stay tight.
+        const gate = Math.min(1, Math.max(0.05, pattern.gate));
+        const gatedDur = Math.max(0.02, (buf.duration / rate) * gate);
         for (let j = 0; j < ratchet; j++) {
           const src = ctx.createBufferSource();
           src.buffer = buf;
@@ -84,7 +86,7 @@ export async function renderPatternToWav(
           gain.gain.value = Math.max(0, hit.gain);
           src.connect(gain).connect(ctx.destination);
           src.start(when + j * sub);
-          const playDur = ratchet === 1 ? naturalDur : Math.min(sub * 1.8, naturalDur);
+          const playDur = ratchet === 1 ? gatedDur : Math.min(sub * 1.8, gatedDur);
           src.stop(when + j * sub + playDur);
         }
       }
