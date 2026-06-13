@@ -186,3 +186,97 @@ input[type="number"] {
   border: 1px solid var(--grid-line);
   color: var(--muted);
 }
+
+/* ── Mobile / touch ─────────────────────────────────────────────────────── */
+
+/* Remove 300 ms tap delay on interactive elements */
+button,
+input[type="range"],
+input[type="checkbox"],
+select,
+.cell,
+.pad,
+.waveform {
+  touch-action: manipulation;
+}
+
+@media (max-width: 640px) {
+  .app {
+    padding: 10px 10px 80px;
+  }
+
+  .app h1 { font-size: 18px; }
+  .subtitle { font-size: 12px; margin-bottom: 12px; }
+
+  .panel {
+    padding: 10px 12px;
+    border-radius: 8px;
+    margin-bottom: 10px;
+  }
+
+  /* Larger tap targets on all buttons */
+  button {
+    min-height: 44px;
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+
+  /* Controls wrap and fill width */
+  .row { gap: 8px; }
+
+  label.control {
+    flex: 1 1 140px;
+  }
+
+  input[type="range"] {
+    width: 100%;
+  }
+
+  /* ── Sequencer grid ── */
+  .cell {
+    width: 24px;
+    height: 32px;
+    border-radius: 4px;
+  }
+
+  .seq-label {
+    width: 52px;
+    font-size: 10px;
+    padding-right: 4px;
+    flex-shrink: 0;
+  }
+
+  .grid-wrap {
+    -webkit-overflow-scrolling: touch;
+    overflow-x: auto;
+  }
+
+  /* ── Pad bank: 4 columns on mobile ── */
+  .pads {
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+  }
+
+  .pad {
+    aspect-ratio: 1;
+    min-height: 56px;
+    font-size: 12px;
+  }
+
+  .pad .key { font-size: 16px; }
+
+  /* ── Waveform ── */
+  .waveform { height: 80px; }
+}
+
+@media (max-width: 400px) {
+  .cell {
+    width: 20px;
+    height: 28px;
+  }
+
+  .seq-label {
+    width: 44px;
+    font-size: 9px;
+  }
+}
