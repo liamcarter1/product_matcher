@@ -117,15 +117,27 @@ export class AudioEngine {
     for (const hit of hitsAtStep(p, step)) {
       const slice = this.slices[hit.slice % this.slices.length];
       const ratchet = Math.max(1, hit.ratchet);
-      const sub = stepDur / ratchet;
-      for (let j = 0; j < ratchet; j++) {
+      if (ratchet === 1) {
+        // Single hit: let the chop ring out its full natural length (the slice
+        // length shown in the waveform) instead of gating it to one step.
         this.voices.trigger(slice, {
           pitch: hit.pitch,
           reverse: hit.reverse,
           gain: hit.gain,
-          time: time + swing + j * sub,
-          maxDuration: sub * 1.8,
+          time: time + swing,
         });
+      } else {
+        // Ratchet roll: tight retriggers, capped so the stutters stay distinct.
+        const sub = stepDur / ratchet;
+        for (let j = 0; j < ratchet; j++) {
+          this.voices.trigger(slice, {
+            pitch: hit.pitch,
+            reverse: hit.reverse,
+            gain: hit.gain,
+            time: time + swing + j * sub,
+            maxDuration: sub * 1.8,
+          });
+        }
       }
     }
     // Drive the playback rate hint (so reverse/pitch read clean even at edges).
